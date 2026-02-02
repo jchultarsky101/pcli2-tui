@@ -35,6 +35,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.show_search_modal {
         draw_search_modal(f, f.area(), app);
     }
+
+    // Draw help modal if active
+    if matches!(app.current_state, AppState::Help) {
+        draw_help_modal(f, f.area(), app);
+    }
 }
 
 
@@ -43,7 +48,7 @@ fn draw_main_content(f: &mut Frame, area: Rect, app: &mut App) {
         AppState::Folders | AppState::Assets => draw_folder_asset_view(f, area, app),
         AppState::Search => draw_search_view(f, area, app),
         AppState::Uploading | AppState::Downloading => draw_upload_download_view(f, area, app),
-        AppState::Help => draw_help_view(f, area, app),
+        AppState::Help => draw_folder_asset_view(f, area, app), // Show folder/asset view underneath help modal
         AppState::CommandHistory => draw_command_history_view(f, area, app),
         AppState::Log => draw_log_view(f, area, app),
         AppState::PaneResize => draw_folder_asset_view(f, area, app), // Use the same view but indicate resize mode
@@ -67,12 +72,12 @@ fn draw_folder_asset_view(f: &mut Frame, area: Rect, app: &mut App) {
 fn draw_folders_panel(f: &mut Frame, area: Rect, app: &mut App) {
     let is_active = matches!(app.active_pane, crate::app::ActivePane::Folders);
     let border_color = if is_active {
-        Color::Yellow
+        Color::Rgb(255, 215, 0)  // Gold color for active pane (consistent with other panes)
     } else {
-        Color::Gray
+        Color::Rgb(100, 100, 100)  // Muted gray for inactive
     };
     let title = format!(
-        " Folder(s) [{}] ",
+        " 📁 Folder(s) [{}] ",
         app.current_folder.as_deref().unwrap_or("/")
     );
     let items: Vec<ListItem> = app
@@ -81,35 +86,43 @@ fn draw_folders_panel(f: &mut Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(i, folder)| {
             let is_selected = i == app.selected_folder_index;
-            let style = if is_selected {
-                Style::default().bg(Color::Blue).fg(Color::White)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
 
             let content = if folder.uuid == ".." {
                 let special_style = if is_selected {
                     Style::default()
-                        .bg(Color::Blue)
+                        .bg(Color::Rgb(106, 90, 205))  // Indigo for parent folder
                         .fg(Color::White)
                         .add_modifier(Modifier::ITALIC)
                 } else {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(Color::Rgb(173, 216, 230))  // Light blue for parent folder
                         .add_modifier(Modifier::ITALIC)
                 };
                 Line::from(vec![Span::styled(
-                    format!("📁 {}", folder.name),
+                    format!("🔙 {}", folder.name),
                     special_style,
                 )])
             } else {
-                Line::from(vec![Span::styled(
-                    format!(
-                        "📁 {} ({} folders, {} assets)",
-                        folder.name, folder.folders_count, folder.assets_count
-                    ),
-                    style,
-                )])
+                // Create spans for folder name and stats separately
+                let name_span = Span::styled(
+                    format!("📂 {}", folder.name),
+                    if is_selected {
+                        Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)  // Forest green bg with white text when selected (same as assets)
+                    } else {
+                        Style::default().fg(Color::Rgb(255, 215, 0))  // Gold text for folder name (same as assets)
+                    }
+                );
+
+                let stats_span = Span::styled(
+                    format!(" ({} 📁, {} 📎)", folder.folders_count, folder.assets_count),
+                    if is_selected {
+                        Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::Rgb(200, 200, 200))  // Lighter gray stats when selected
+                    } else {
+                        Style::default().fg(Color::Rgb(150, 150, 150))  // Subdued gray for stats
+                    }
+                );
+
+                Line::from(vec![name_span, stats_span])
             };
 
             ListItem::new(content)
@@ -121,9 +134,9 @@ fn draw_folders_panel(f: &mut Frame, area: Rect, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(border_color)),
+                .border_style(Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
         )
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
+        .highlight_style(Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White));  // Forest green highlight (same as assets)
 
     f.render_widget(list, area);
 }
@@ -131,16 +144,16 @@ fn draw_folders_panel(f: &mut Frame, area: Rect, app: &mut App) {
 fn draw_assets_panel(f: &mut Frame, area: Rect, app: &mut App) {
     let is_active = matches!(app.active_pane, crate::app::ActivePane::Assets);
     let border_color = if is_active {
-        Color::Yellow
+        Color::Rgb(255, 215, 0)  // Gold color for active pane (consistent with other panes)
     } else {
-        Color::Gray
+        Color::Rgb(100, 100, 100)  // Muted gray for inactive
     };
 
     // Determine the title based on whether we're loading assets for selection
     let title = if app.assets_loading_for_selection {
-        " Assets - Loading... ".to_string()
+        " 📎 Assets - Loading... ".to_string()
     } else {
-        " Asset(s) ".to_string()
+        " 📎 Asset(s) ".to_string()
     };
 
     let items: Vec<ListItem> = if app.assets_loading_for_selection {
@@ -148,7 +161,7 @@ fn draw_assets_panel(f: &mut Frame, area: Rect, app: &mut App) {
         vec![ListItem::new(Line::from(Span::styled(
             "⏳ Loading assets...",
             Style::default()
-                .fg(Color::Blue)
+                .fg(Color::Rgb(100, 149, 237))  // Cornflower blue
                 .add_modifier(Modifier::ITALIC),
         )))]
     } else {
@@ -158,20 +171,20 @@ fn draw_assets_panel(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|(i, asset)| {
                 let is_selected = i == app.selected_asset_index;
                 let style = if is_selected {
-                    Style::default().bg(Color::Green).fg(Color::White)
+                    Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)  // Forest green for selection
                 } else {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(Color::Rgb(255, 215, 0))  // Gold for unselected
                 };
 
                 let icon = match asset.file_type.as_str() {
                     "model" => "🏗️",    // Building/construction icon for 3D models
-                    "document" => "📄", // Document icon
+                    "document" => "📝", // Document icon
                     "image" => "🖼️",    // Image icon
-                    "video" => "🎬",    // Video icon
-                    "audio" => "🎵",    // Audio icon
+                    "video" => "🎥",    // Video icon
+                    "audio" => "🎧",    // Audio icon
                     "archive" => "📦",  // Archive icon
                     "code" => "💻",     // Code/icon
-                    _ => "📁",          // Default folder icon
+                    _ => "📄",          // Default document icon
                 };
 
                 let content = Line::from(vec![Span::styled(
@@ -189,9 +202,9 @@ fn draw_assets_panel(f: &mut Frame, area: Rect, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(border_color)),
+                .border_style(Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
         )
-        .highlight_style(Style::default().bg(Color::Green).fg(Color::White));
+        .highlight_style(Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White));  // Forest green highlight
 
     f.render_widget(list, area);
 }
@@ -238,7 +251,14 @@ fn draw_upload_download_view(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_help_view(f: &mut Frame, area: Rect, _app: &App) {
+
+fn draw_help_modal(f: &mut Frame, area: Rect, _app: &App) {
+    // Create a centered modal window
+    let popup_area = centered_rect(60, 80, area);
+
+    // Clear the background first
+    f.render_widget(Clear, popup_area);
+
     let help_text = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -251,9 +271,6 @@ fn draw_help_view(f: &mut Frame, area: Rect, _app: &App) {
         Line::from("  k / Up Arrow   - Move up in current pane"),
         Line::from("  Tab            - Switch between panes (forward)"),
         Line::from("  Shift+Tab      - Switch between panes (reverse)"),
-        Line::from("  F10            - Focus/unfocus main menu"),
-        Line::from("  h/l or ←/→     - Navigate menu items when menu is focused"),
-        Line::from("  Enter/Space    - Select menu item when menu is focused"),
         Line::from("  Enter          - Open selected folder or perform action on asset"),
         Line::from("  Backspace      - Go back to parent folder"),
         Line::from(""),
@@ -269,6 +286,13 @@ fn draw_help_view(f: &mut Frame, area: Rect, _app: &App) {
         Line::from("  u              - Upload mode"),
         Line::from("  d              - Download mode"),
         Line::from(""),
+        Line::from("Search Dialog:"),
+        Line::from("  /              - Open search dialog"),
+        Line::from("  Tab            - Switch focus in search dialog (forward)"),
+        Line::from("  Shift+Tab      - Switch focus in search dialog (reverse)"),
+        Line::from("  Enter          - Perform search or close search results"),
+        Line::from("  Esc            - Close search dialog"),
+        Line::from(""),
         Line::from("General:"),
         Line::from("  Ctrl+N         - Enter pane resize mode"),
         Line::from("  q / Ctrl+C     - Quit application"),
@@ -283,14 +307,14 @@ fn draw_help_view(f: &mut Frame, area: Rect, _app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Help - PCLI2-TUI")
-                .style(Style::default().bg(Color::DarkGray)),
+                .title(" 💡 Help ")  // Changed title with padding spaces and emoji
+                .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD))  // Gold border
+                .padding(ratatui::widgets::Padding::uniform(1))  // Add 1 space padding on all sides
+                .style(Style::default().bg(Color::Rgb(40, 40, 50))),  // Dark blue-gray background
         )
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(Color::Rgb(220, 220, 220)))  // Light gray text for better readability
         .wrap(ratatui::widgets::Wrap { trim: true });
 
-    // Calculate centered area for the help box
-    let popup_area = centered_rect(60, 80, area);
     f.render_widget(paragraph, popup_area);
 }
 
@@ -300,23 +324,23 @@ fn draw_contextual_key_bindings(f: &mut Frame, app: &App, area: Rect) {
     // Define key bindings based on current state
     let key_bindings_text = match app.current_state {
         crate::app::AppState::Folders | crate::app::AppState::Assets => {
-            "Tab:switch | j/k:nav | Enter:sel | /:search | h:help | q:quit"
+            "↹:switch | ⬆⬇:nav | ↵:sel | /:search | ?:help | ◼:quit"
         }
         crate::app::AppState::Search => {
-            "Enter:search | Esc:cancel | ↑↓:nav | d:download | q:quit"
+            "↵:search | ⎋:cancel | ↑↓:nav | ↓:download | ◼:quit"
         }
-        crate::app::AppState::Uploading | crate::app::AppState::Downloading => "q:quit",
-        crate::app::AppState::Help => "q/Esc:close",
-        crate::app::AppState::CommandHistory => "q/Esc:close",
-        crate::app::AppState::Log => "↑↓:scroll | q:quit",
-        crate::app::AppState::PaneResize => "↑↓←→:resize | Enter:ok | Esc/q:cancel",
+        crate::app::AppState::Uploading | crate::app::AppState::Downloading => "◼:quit",
+        crate::app::AppState::Help => "◼/⎋:close",
+        crate::app::AppState::CommandHistory => "◼/⎋:close",
+        crate::app::AppState::Log => "↑↓:scroll | ◼:quit",
+        crate::app::AppState::PaneResize => "↑↓←→:resize | ↵:ok | ⎋/◼:cancel",
     };
 
     let key_bindings_paragraph = Paragraph::new(ratatui::text::Line::from(key_bindings_text))
         .style(
             ratatui::style::Style::default()
-                .fg(ratatui::style::Color::Gray)
-                .bg(ratatui::style::Color::DarkGray),
+                .fg(ratatui::style::Color::Rgb(220, 220, 220))  // Light gray text
+                .bg(ratatui::style::Color::Rgb(60, 60, 60)),   // Darker background
         );
 
     f.render_widget(key_bindings_paragraph, area);
@@ -475,9 +499,9 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
 
     // Determine the border color based on whether this pane is active
     let border_color = if matches!(app.active_pane, crate::app::ActivePane::Log) {
-        Color::Yellow
+        Color::Rgb(255, 215, 0)  // Gold color for active pane (consistent with other panes)
     } else {
-        Color::Gray
+        Color::Rgb(80, 80, 80)   // Darker gray for inactive
     };
 
     let list = ratatui::widgets::List::new(list_items)
@@ -485,20 +509,20 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::widgets::Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
                 .title(format!(
-                    " Log [{}/{}] ", // Simplified format
+                    " 📝 Log [{}/{}] ", // Added log emoji
                     app.log_scroll_position + 1,
                     app.log_entries.len()
                 ))
-                .border_style(ratatui::style::Style::default().fg(border_color)),
+                .border_style(ratatui::style::Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
         )
         .style(
             ratatui::style::Style::default()
-                .bg(ratatui::style::Color::DarkGray)
-                .fg(ratatui::style::Color::White),
+                .bg(ratatui::style::Color::Rgb(30, 30, 30))  // Same dark background as other panes
+                .fg(ratatui::style::Color::Rgb(200, 200, 200)),  // Same text color as other panes
         )
         .highlight_style(
             ratatui::style::Style::default()
-                .bg(ratatui::style::Color::Blue)
+                .bg(ratatui::style::Color::Rgb(70, 130, 180))  // Steel blue highlight
                 .fg(ratatui::style::Color::White),
         );
 
@@ -506,7 +530,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_command_history_view(f: &mut Frame, area: Rect, app: &App) {
-    let title = "Command History";
+    let title = " 📋 Command History ";
     let commands: Vec<ratatui::text::Line> = app
         .command_history
         .iter()
@@ -519,11 +543,14 @@ fn draw_command_history_view(f: &mut Frame, area: Rect, app: &App) {
         .block(
             ratatui::widgets::Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
-                .title(title),
+                .title(title)
+                .border_style(ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::Rgb(147, 112, 219))  // Medium purple
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
         )
         .highlight_style(
             ratatui::style::Style::default()
-                .bg(ratatui::style::Color::Blue)
+                .bg(ratatui::style::Color::Rgb(147, 112, 219))  // Medium purple
                 .fg(ratatui::style::Color::White),
         );
 
@@ -532,7 +559,7 @@ fn draw_command_history_view(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_log_view(f: &mut Frame, area: Rect, app: &App) {
     let title = format!(
-        "Log [{}/{}]",
+        " 📝 Log [{}/{}] ",
         app.log_scroll_position + 1,
         app.log_entries.len()
     );
@@ -556,16 +583,16 @@ fn draw_log_view(f: &mut Frame, area: Rect, app: &App) {
                 // Style for selected item - use a more prominent highlight
                 ratatui::widgets::ListItem::new(ratatui::text::Line::from(vec![
                     ratatui::text::Span::styled(
-                        "> ",
+                        "▶ ",
                         ratatui::style::Style::default()
-                            .bg(ratatui::style::Color::Blue)
-                            .fg(ratatui::style::Color::Yellow)
+                            .bg(ratatui::style::Color::Rgb(70, 130, 180))  // Steel blue
+                            .fg(ratatui::style::Color::Rgb(255, 215, 0))   // Gold
                             .add_modifier(ratatui::style::Modifier::BOLD),
                     ),
                     ratatui::text::Span::styled(
                         entry.as_str(),
                         ratatui::style::Style::default()
-                            .bg(ratatui::style::Color::Blue)
+                            .bg(ratatui::style::Color::Rgb(70, 130, 180))  // Steel blue
                             .fg(ratatui::style::Color::White)
                             .add_modifier(ratatui::style::Modifier::BOLD),
                     ),
@@ -580,7 +607,15 @@ fn draw_log_view(f: &mut Frame, area: Rect, app: &App) {
     let list = ratatui::widgets::List::new(list_items).block(
         ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
-            .title(title),
+            .title(title)
+            .border_style(ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Rgb(100, 149, 237))  // Cornflower blue border
+                .add_modifier(ratatui::style::Modifier::BOLD)),
+    )
+    .style(
+        ratatui::style::Style::default()
+            .bg(ratatui::style::Color::Rgb(30, 30, 30))  // Same background as other panes
+            .fg(ratatui::style::Color::Rgb(200, 200, 200)),  // Same text color as other panes
     );
 
     f.render_widget(list, area);
@@ -596,9 +631,9 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
     // Draw outer frame for the modal
     let modal_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD))  // Gold border to match other panes
         .title(" 🔍 Search ")  // Added spaces for padding
-        .style(Style::default().bg(Color::Rgb(25, 25, 25))); // Dark background matching theme
+        .style(Style::default().bg(Color::Rgb(30, 30, 40))); // Slightly different dark background
 
     f.render_widget(modal_block, popup_area);
 
@@ -660,11 +695,11 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
             .iter()
             .enumerate()
             .map(|(i, asset)| {
-                let is_selected = i == app.selected_asset_index;
+                let is_selected = i == app.selected_search_result_index;
                 let style = if is_selected {
-                    Style::default().bg(Color::Blue).fg(Color::White)
+                    Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)  // Forest green to match other selections
                 } else {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(Color::Rgb(255, 255, 0))  // Gold to match other unselected items
                 };
 
                 let icon = match asset.file_type.as_str() {
@@ -690,9 +725,9 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
 
     // Determine border color based on focus state
     let results_border_color = if matches!(app.search_modal_focus, crate::app::SearchModalFocus::Results) {
-        Color::Yellow // Highlight with yellow when focused (consistent with other panes)
+        Color::Rgb(255, 105, 180) // Hot pink when focused (matching modal border)
     } else {
-        Color::Gray // More visible color when not focused
+        Color::Rgb(100, 100, 100) // More visible color when not focused
     };
 
     let results_list = List::new(results_list_items)
@@ -702,7 +737,7 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
                 .border_style(Style::default().fg(results_border_color).add_modifier(Modifier::BOLD)) // Highlight when focused
                 .title(results_title)
         ) // Consistent border styling
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
+        .highlight_style(Style::default().bg(Color::Rgb(135, 206, 235)).fg(Color::Black)); // Light sky blue for contrast
 
     // Render the results list
     f.render_widget(results_list, chunks[1]);

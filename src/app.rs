@@ -78,6 +78,7 @@ pub struct App {
     pub resize_delta_y: i32,                // Vertical resize adjustment
     pub search_results: Vec<Asset>,          // Store search results separately from folder assets
     pub search_modal_focus: SearchModalFocus, // Track which element has focus in search modal
+    pub selected_search_result_index: usize,  // Track selected index in search results separately
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +114,7 @@ impl App {
             resize_delta_y: 0,
             search_results: vec![],
             search_modal_focus: SearchModalFocus::Input,
+            selected_search_result_index: 0,
         }
     }
 
@@ -503,26 +505,26 @@ impl App {
                 // Navigate down in search results only if focused on results
                 if matches!(self.search_modal_focus, SearchModalFocus::Results) {
                     if !self.search_results.is_empty() {
-                        self.selected_asset_index =
-                            (self.selected_asset_index + 1).min(self.search_results.len() - 1);
+                        self.selected_search_result_index =
+                            (self.selected_search_result_index + 1).min(self.search_results.len() - 1);
                     }
                 }
             }
             KeyCode::Up => {
                 // Navigate up in search results only if focused on results
                 if matches!(self.search_modal_focus, SearchModalFocus::Results) {
-                    if self.selected_asset_index > 0 {
-                        self.selected_asset_index -= 1;
+                    if self.selected_search_result_index > 0 {
+                        self.selected_search_result_index -= 1;
                     }
                 }
             }
             KeyCode::Char('d')
                 if matches!(self.search_modal_focus, SearchModalFocus::Results) &&
-                   !self.search_results.is_empty() && self.selected_asset_index < self.search_results.len() =>
+                   !self.search_results.is_empty() && self.selected_search_result_index < self.search_results.len() =>
             {
                 // Download selected asset from search results
-                let asset_uuid = self.search_results[self.selected_asset_index].uuid.clone();
-                let asset_name = self.search_results[self.selected_asset_index].name.clone();
+                let asset_uuid = self.search_results[self.selected_search_result_index].uuid.clone();
+                let asset_name = self.search_results[self.selected_search_result_index].name.clone();
                 self.download_asset_by_uuid(&asset_uuid, &asset_name).await;
             }
             _ => {}
