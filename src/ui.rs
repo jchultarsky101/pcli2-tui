@@ -40,6 +40,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if matches!(app.current_state, AppState::Help) {
         draw_help_modal(f, f.area(), app);
     }
+
+    // Draw geometric match modal if active
+    if app.show_geometric_match_modal {
+        draw_geometric_match_modal(f, f.area(), app);
+    }
 }
 
 
@@ -281,6 +286,7 @@ fn draw_help_modal(f: &mut Frame, area: Rect, _app: &App) {
         Line::from(""),
         Line::from("Asset Operations:"),
         Line::from("  d              - Download selected asset (in Assets view)"),
+        Line::from("  g              - Perform geometric match on selected asset (in Assets view)"),
         Line::from(""),
         Line::from("Mode Switching:"),
         Line::from("  u              - Upload mode"),
@@ -323,17 +329,20 @@ fn draw_help_modal(f: &mut Frame, area: Rect, _app: &App) {
 fn draw_contextual_key_bindings(f: &mut Frame, app: &App, area: Rect) {
     // Define key bindings based on current state
     let key_bindings_text = match app.current_state {
-        crate::app::AppState::Folders | crate::app::AppState::Assets => {
-            "↹:switch | ⬆⬇:nav | ↵:sel | /:search | ?:help | ◼:quit"
+        crate::app::AppState::Folders => {
+            "tab:switch | j/k:nav | enter:sel | /:search | h:help | q:quit"
+        }
+        crate::app::AppState::Assets => {
+            "tab:switch | j/k:nav | enter:sel | g:geom-match | /:search | h:help | q:quit"
         }
         crate::app::AppState::Search => {
-            "↵:search | ⎋:cancel | ↑↓:nav | ↓:download | ◼:quit"
+            "enter:search | esc:cancel | ↑↓:nav | d:download | q:quit"
         }
-        crate::app::AppState::Uploading | crate::app::AppState::Downloading => "◼:quit",
-        crate::app::AppState::Help => "◼/⎋:close",
-        crate::app::AppState::CommandHistory => "◼/⎋:close",
-        crate::app::AppState::Log => "↑↓:scroll | ◼:quit",
-        crate::app::AppState::PaneResize => "↑↓←→:resize | ↵:ok | ⎋/◼:cancel",
+        crate::app::AppState::Uploading | crate::app::AppState::Downloading => "q:quit",
+        crate::app::AppState::Help => "q/esc:close",
+        crate::app::AppState::CommandHistory => "q/esc:close",
+        crate::app::AppState::Log => "↑↓:scroll | q:quit",
+        crate::app::AppState::PaneResize => "↑↓←→:resize | enter:ok | esc/q:cancel",
     };
 
     let key_bindings_paragraph = Paragraph::new(ratatui::text::Line::from(key_bindings_text))
@@ -517,7 +526,6 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         )
         .style(
             ratatui::style::Style::default()
-                .bg(ratatui::style::Color::Rgb(30, 30, 30))  // Same dark background as other panes
                 .fg(ratatui::style::Color::Rgb(200, 200, 200)),  // Same text color as other panes
         )
         .highlight_style(
@@ -725,7 +733,7 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
 
     // Determine border color based on focus state
     let results_border_color = if matches!(app.search_modal_focus, crate::app::SearchModalFocus::Results) {
-        Color::Rgb(255, 105, 180) // Hot pink when focused (matching modal border)
+        Color::Rgb(255, 215, 0) // Gold/yellow when focused (to match search input field)
     } else {
         Color::Rgb(100, 100, 100) // More visible color when not focused
     };
@@ -741,4 +749,93 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
 
     // Render the results list
     f.render_widget(results_list, chunks[1]);
+}
+
+fn draw_geometric_match_modal(f: &mut Frame, area: Rect, app: &App) {
+    // Create a centered modal window
+    let popup_area = centered_rect(60, 40, area);
+
+    // Clear the background first
+    f.render_widget(Clear, popup_area);
+
+    // Draw outer frame for the modal
+    let modal_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD))  // Gold border
+        .title(" 🔍 Geometric Match Results ")  // Added spaces for padding
+        .style(Style::default().bg(Color::Rgb(30, 30, 40))); // Dark background matching theme
+
+    f.render_widget(modal_block, popup_area);
+
+    // Divide the modal into sections for results
+    let inner_area = Rect {
+        x: popup_area.x + 1,
+        y: popup_area.y + 1,
+        width: popup_area.width - 2,
+        height: popup_area.height - 2,
+    };
+
+    // Results section
+    let results_title = format!(" Results ({}) ", app.geometric_match_results.len()); // Renamed to "Results" and padded with spaces
+
+    let results_list_items = if app.command_in_progress {
+        // Show a searching indicator when command is in progress
+        vec![ListItem::new(
+            Line::from(Span::styled(
+                "Processing geometric match...",
+                Style::default().fg(Color::Yellow)
+            ))
+        )]
+    } else if app.geometric_match_results.is_empty() {
+        // Show a message when there are no geometric match results
+        vec![ListItem::new(
+            Line::from(Span::styled(
+                "No geometric matches found",
+                Style::default().fg(Color::DarkGray)
+            ))
+        )]
+    } else {
+        app.geometric_match_results
+            .iter()
+            .enumerate()
+            .map(|(i, asset)| {
+                let is_selected = i == app.selected_asset_index; // Using selected_asset_index for now
+                let style = if is_selected {
+                    Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White) // Forest green to match other selections
+                } else {
+                    Style::default().fg(Color::Rgb(255, 255, 0)) // Gold to match other unselected items
+                };
+
+                let icon = match asset.file_type.as_str() {
+                    "model" => "🏗️",    // Building/construction icon for 3D models
+                    "document" => "📄", // Document icon
+                    "image" => "🖼️",    // Image icon
+                    "video" => "🎬",    // Video icon
+                    "audio" => "🎵",    // Audio icon
+                    "archive" => "📦",  // Archive icon
+                    "code" => "💻",     // Code/icon
+                    _ => "📁",          // Default folder icon
+                };
+
+                let content = Line::from(vec![Span::styled(
+                    format!("{} {}", icon, asset.name),
+                    style,
+                )]);
+
+                ListItem::new(content)
+            })
+            .collect::<Vec<ListItem>>()
+    };
+
+    let results_list = List::new(results_list_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD)) // Gold border
+                .title(results_title)
+        ) // Consistent border styling
+        .highlight_style(Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)); // Forest green highlight
+
+    // Render the results list
+    f.render_widget(results_list, inner_area);
 }

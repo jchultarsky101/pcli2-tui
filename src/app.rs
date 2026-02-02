@@ -79,6 +79,9 @@ pub struct App {
     pub search_results: Vec<Asset>,          // Store search results separately from folder assets
     pub search_modal_focus: SearchModalFocus, // Track which element has focus in search modal
     pub selected_search_result_index: usize,  // Track selected index in search results separately
+    pub geometric_match_results: Vec<Asset>,  // Store geometric match results
+    pub show_geometric_match_modal: bool,     // Whether to show the geometric match modal
+    pub last_entered_folder_path: Option<String>, // Track the last folder entered to re-select it when going back
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,10 +118,22 @@ impl App {
             search_results: vec![],
             search_modal_focus: SearchModalFocus::Input,
             selected_search_result_index: 0,
+            geometric_match_results: vec![],
+            show_geometric_match_modal: false,
+            last_entered_folder_path: None,
         }
     }
 
     pub async fn handle_key_event(&mut self, key: KeyEvent) {
+        // Handle geometric match modal if it's active
+        if self.show_geometric_match_modal {
+            // Handle closing the geometric match modal
+            if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+                self.show_geometric_match_modal = false;
+                return;
+            }
+        }
+
         // Handle search modal if it's active - make it modal and prevent other interactions
         if self.show_search_modal {
             self.handle_search_keys(key).await;
@@ -440,6 +455,16 @@ impl App {
                     let asset_uuid = self.assets[self.selected_asset_index].uuid.clone();
                     let asset_name = self.assets[self.selected_asset_index].name.clone();
                     self.download_asset_by_uuid(&asset_uuid, &asset_name).await;
+                }
+            }
+            KeyCode::Char('g') => {
+                // Perform geometric match on selected asset
+                if !self.assets.is_empty() && self.selected_asset_index < self.assets.len() {
+                    let asset_uuid = self.assets[self.selected_asset_index].uuid.clone();
+                    let asset_name = self.assets[self.selected_asset_index].name.clone();
+                    self.perform_geometric_match(&asset_uuid).await;
+                    self.show_geometric_match_modal = true; // Show the geometric match modal
+                    self.status_message = format!("Geometric match performed on: {}", asset_name);
                 }
             }
             KeyCode::Char('q') => {
@@ -966,6 +991,11 @@ impl App {
     }
 
     pub async fn enter_folder(&mut self, folder_path: String) {
+        // Store the current folder path before entering the new folder
+        if let Some(ref current_path) = self.current_folder {
+            self.last_entered_folder_path = Some(current_path.clone());
+        }
+
         let folder_path_clone = folder_path.clone();
         self.current_folder = Some(folder_path);
 
@@ -996,14 +1026,56 @@ impl App {
                 // Find the parent path by removing the last component
                 if let Some(last_slash_idx) = current_path.rfind('/') {
                     let parent_path = current_path[..last_slash_idx].to_string();
+
+                    // Extract the folder name that we're going back from
+                    let folder_name_we_came_from = current_path[last_slash_idx + 1..].to_string();
+
                     self.current_folder = Some(parent_path);
+
+                    // Reload both folders and assets for the new context
+                    self.load_folders_for_current_context().await;
+                    self.load_assets_for_current_folder().await;
+
+                    // Find the index of the folder we came from in the current folder list
+                    // First, try to find by name
+                    if let Some(index) = self.folders.iter().position(|f| f.name == folder_name_we_came_from) {
+                        self.selected_folder_index = index;
+                    } else {
+                        // If not found by name, try to find by UUID (in case folder name and UUID differ)
+                        if let Some(index) = self.folders.iter().position(|f| f.uuid == folder_name_we_came_from) {
+                            self.selected_folder_index = index;
+                        } else {
+                            // If still not found, default to the first item (or skip the parent indicator if present)
+                            if !self.folders.is_empty() && self.folders[0].uuid == ".." {
+                                self.selected_folder_index = 1;
+                            } else {
+                                self.selected_folder_index = 0;
+                            }
+                        }
+                    }
                 } else {
                     // If no slash, we're at a top-level folder, so go back to root
+                    // Extract the folder name we're coming from
+                    let folder_name_we_came_from = current_path.clone();
+
                     self.current_folder = None;
+
+                    // Reload both folders and assets for the new context
+                    self.load_folders_for_current_context().await;
+                    self.load_assets_for_current_folder().await;
+
+                    // Find the index of the folder we came from in the current folder list
+                    if let Some(index) = self.folders.iter().position(|f| f.name == folder_name_we_came_from) {
+                        self.selected_folder_index = index;
+                    } else {
+                        // If not found, default to the first item (or skip the parent indicator if present)
+                        if !self.folders.is_empty() && self.folders[0].uuid == ".." {
+                            self.selected_folder_index = 1;
+                        } else {
+                            self.selected_folder_index = 0;
+                        }
+                    }
                 }
-                // Reload both folders and assets for the new context
-                self.load_folders_for_current_context().await;
-                self.load_assets_for_current_folder().await;
 
                 // Stay in the same state but with updated content
                 // If we were viewing assets before, continue viewing assets of the new folder
@@ -1154,6 +1226,54 @@ impl App {
 }
 
 impl App {
+    pub async fn perform_geometric_match(&mut self, asset_uuid: &str) {
+        self.last_executed_command = format!(
+            "pcli2 asset geometric-match --uuid \"{}\" --format json",
+            asset_uuid
+        );
+        self.command_history
+            .push(self.last_executed_command.clone());
+        self.command_in_progress = true; // Set flag when command starts
+        self.status_message = format!("Performing geometric match on asset: {}", asset_uuid);
+
+        match pcli_commands::geometric_match(asset_uuid) {
+            Ok(pcli_assets) => {
+                // Store geometric match results
+                self.geometric_match_results = pcli_assets
+                    .into_iter()
+                    .map(|a| Asset {
+                        uuid: a.uuid,
+                        name: a.name,
+                        folder_uuid: a.path.split('/').next().unwrap_or_default().to_string(), // Extract folder from path
+                        file_type: a.file_type,
+                        size: a.file_size,
+                    })
+                    .collect();
+
+                self.status_message = format!("Found {} geometric matches", self.geometric_match_results.len());
+
+                // Log successful command with success indicator
+                self.add_log_entry(format!(
+                    "[{}] ✓ SUCCESS: {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command
+                ));
+                self.command_in_progress = false; // Clear flag when command completes
+            }
+            Err(e) => {
+                self.status_message = format!("Geometric match failed: {}", e);
+
+                // Log failed command with error indicator
+                self.add_log_entry(format!(
+                    "[{}] ✗ ERROR: {} - {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command,
+                    e
+                ));
+                self.command_in_progress = false; // Clear flag when command completes
+            }
+        }
+    }
     pub async fn handle_mouse_event(&mut self, mouse: crossterm::event::MouseEvent) {
         match mouse.kind {
             crossterm::event::MouseEventKind::ScrollDown => {

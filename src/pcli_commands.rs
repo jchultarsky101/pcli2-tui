@@ -222,3 +222,97 @@ pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeometricMatchAsset {
+    #[serde(rename = "id")]
+    pub uuid: String,
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub file_type: String,
+    #[serde(rename = "file_size")]
+    pub file_size: Option<u64>,
+    #[serde(rename = "processing_status")]
+    pub processing_status: String,
+    #[serde(rename = "created_at")]
+    pub created_at: String,
+    #[serde(rename = "updated_at")]
+    pub updated_at: String,
+    pub metadata: serde_json::Value,
+    #[serde(rename = "is_assembly")]
+    pub is_assembly: bool,
+    #[serde(rename = "state")]
+    pub state: String,
+    #[serde(rename = "tenantId")]
+    pub tenant_id: String,
+    #[serde(rename = "folderId")]
+    pub folder_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeometricMatchResult {
+    asset: GeometricMatchAsset,
+    #[serde(rename = "similarityScore")]
+    similarity_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeometricMatchResponse {
+    #[serde(rename = "assetId")]
+    asset_id: String,
+    matches: Vec<GeometricMatchResult>,
+}
+
+pub fn geometric_match(asset_uuid: &str) -> Result<Vec<PcliAsset>> {
+    // Use the geometric-match command with JSON format
+    let output = Command::new("pcli2")
+        .args([
+            "asset",
+            "geometric-match",
+            "--uuid",
+            asset_uuid,
+            "--format",
+            "json",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("pcli2 geometric match failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+
+    // Parse the geometric match response
+    match serde_json::from_str::<GeometricMatchResponse>(&stdout) {
+        Ok(response) => {
+            let assets: Vec<PcliAsset> = response.matches.into_iter()
+                .map(|match_result| {
+                    let geom_asset = match_result.asset;
+                    PcliAsset {
+                        uuid: geom_asset.uuid,
+                        name: geom_asset.path.split('/').last().unwrap_or(&geom_asset.path).to_string(), // Extract filename from path
+                        path: geom_asset.path,
+                        file_type: geom_asset.file_type,
+                        file_size: geom_asset.file_size,
+                        processing_status: geom_asset.state, // Use state as processing_status
+                        created_at: geom_asset.created_at,
+                        updated_at: geom_asset.updated_at,
+                        metadata: geom_asset.metadata,
+                        is_assembly: geom_asset.is_assembly,
+                    }
+                })
+                .collect();
+
+            Ok(assets)
+        }
+        Err(_) => {
+            // If parsing with dedicated structures fails, return an error with the raw output
+            Err(anyhow::anyhow!(
+                "Failed to parse geometric match results as assets. Raw output: {}",
+                stdout
+            ))
+        }
+    }
+}
