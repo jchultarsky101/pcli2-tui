@@ -49,17 +49,32 @@ async fn run_app(
     // Load initial folder data
     app.load_folders_for_current_context().await;
 
+    // Pre-fetch assets for the first folder if available
+    if !app.folders.is_empty() {
+        // Select the first folder (skip parent indicator if present)
+        if app.folders[0].uuid == ".." && app.folders.len() > 1 {
+            app.selected_folder_index = 1;
+        } else {
+            app.selected_folder_index = 0;
+        }
+
+        // Load assets for the selected folder
+        app.load_assets_for_selected_folder().await;
+    }
+
     loop {
         terminal.draw(|f| ui::draw(f, &mut app))?;
 
-        if event::poll(std::time::Duration::from_millis(16))?
-            && let Event::Key(key) = event::read()?
-        {
-            if key.code == KeyCode::Char('q') {
-                return Ok(());
-            }
+        if event::poll(std::time::Duration::from_millis(16))? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('q') {
+                    return Ok(());
+                }
 
-            app.handle_key_event(key).await;
+                app.handle_key_event(key).await;
+            } else if let Event::Mouse(mouse) = event::read()? {
+                app.handle_mouse_event(mouse).await;
+            }
         }
 
         if app.should_quit {

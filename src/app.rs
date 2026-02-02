@@ -2,8 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::pcli_commands;
-use std::collections::HashMap;
 use chrono::prelude::*;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Folder {
@@ -42,6 +42,7 @@ pub enum AppState {
     Help,
     CommandHistory,
     Log,
+    PaneResize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,6 +73,10 @@ pub struct App {
     pub show_search_modal: bool,            // Whether to show the search modal
     pub search_input_buffer: String,        // Buffer for search input
     pub command_in_progress: bool,          // Whether a PCLI2 command is currently running
+    pub resize_mode_active: bool,           // Whether pane resize mode is active
+    pub resize_delta_x: i32,                // Horizontal resize adjustment
+    pub resize_delta_y: i32,                // Vertical resize adjustment
+    pub search_results: Vec<Asset>,          // Store search results separately from folder assets
 }
 
 impl App {
@@ -96,21 +101,52 @@ impl App {
             show_search_modal: false,
             search_input_buffer: String::new(),
             command_in_progress: false,
+            resize_mode_active: false,
+            resize_delta_x: 0,
+            resize_delta_y: 0,
+            search_results: vec![],
         }
     }
 
     pub async fn handle_key_event(&mut self, key: KeyEvent) {
         // Handle global keys that work in any state
-        if key.code == KeyCode::Tab {
-            // Cycle between panes
+        if key.code == KeyCode::Tab && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+        {
+            // Cycle between panes forward (Tab without Alt)
             self.active_pane = match self.active_pane {
                 ActivePane::Folders => ActivePane::Assets,
                 ActivePane::Assets => ActivePane::Log,
                 ActivePane::Log => ActivePane::Folders,
             };
             return;
+        } else if key.code == KeyCode::BackTab
+            || (key.code == KeyCode::Tab
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT))
+        {
+            // Cycle between panes in reverse order (Shift+Tab or BackTab)
+            self.active_pane = match self.active_pane {
+                ActivePane::Folders => ActivePane::Log,
+                ActivePane::Assets => ActivePane::Folders,
+                ActivePane::Log => ActivePane::Assets,
+            };
+            return;
         }
 
+        // Handle pane resize mode activation (Ctrl+N)
+        if key.code == KeyCode::Char('n')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            self.resize_mode_active = true;
+            self.current_state = AppState::PaneResize;
+            self.status_message =
+                "Resize mode: Use arrow keys to resize, Enter to confirm, Esc to cancel"
+                    .to_string();
+            return;
+        }
 
         // Handle help key globally
         if key.code == KeyCode::Char('h') {
@@ -207,6 +243,7 @@ impl App {
                     _ => {}
                 }
             }
+            AppState::PaneResize => self.handle_resize_keys(key).await,
         }
     }
 
@@ -263,6 +300,9 @@ impl App {
                             // Check if this is the parent directory indicator
                             if folder.uuid == ".." {
                                 self.go_back_to_parent_folder().await;
+
+                                // After going back to parent, load assets for the parent folder
+                                self.load_assets_for_current_folder().await;
                             } else {
                                 self.enter_folder(folder.path.clone()).await; // Use the full path
                             }
@@ -407,11 +447,79 @@ impl App {
             KeyCode::Enter => {
                 self.search_query = self.search_input_buffer.clone();
                 self.perform_search().await;
-                self.show_search_modal = false; // Close the modal after search
+                // Keep the search modal open after search so users can perform additional searches
             }
             KeyCode::Esc => {
                 self.show_search_modal = false;
                 self.search_input_buffer.clear();
+            }
+            KeyCode::Down => {
+                // Navigate down in search results
+                if !self.search_results.is_empty() {
+                    self.selected_asset_index =
+                        (self.selected_asset_index + 1).min(self.search_results.len() - 1);
+                }
+            }
+            KeyCode::Up => {
+                // Navigate up in search results
+                if self.selected_asset_index > 0 {
+                    self.selected_asset_index -= 1;
+                }
+            }
+            KeyCode::Char('d')
+                if !self.search_results.is_empty() && self.selected_asset_index < self.search_results.len() =>
+            {
+                // Download selected asset from search results
+                let asset_uuid = self.search_results[self.selected_asset_index].uuid.clone();
+                let asset_name = self.search_results[self.selected_asset_index].name.clone();
+                self.download_asset_by_uuid(&asset_uuid, &asset_name).await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_resize_keys(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => {
+                // Increase vertical size of the current pane (decrease the one below)
+                self.resize_delta_y -= 1;
+                self.status_message =
+                    format!("Resize: Adjusting vertically ({})", self.resize_delta_y);
+            }
+            KeyCode::Down => {
+                // Decrease vertical size of the current pane (increase the one below)
+                self.resize_delta_y += 1;
+                self.status_message =
+                    format!("Resize: Adjusting vertically ({})", self.resize_delta_y);
+            }
+            KeyCode::Left => {
+                // Decrease horizontal size of the current pane (increase the one to the right)
+                self.resize_delta_x -= 1;
+                self.status_message =
+                    format!("Resize: Adjusting horizontally ({})", self.resize_delta_x);
+            }
+            KeyCode::Right => {
+                // Increase horizontal size of the current pane (decrease the one to the right)
+                self.resize_delta_x += 1;
+                self.status_message =
+                    format!("Resize: Adjusting horizontally ({})", self.resize_delta_x);
+            }
+            KeyCode::Enter => {
+                // Apply the resize changes and exit resize mode
+                self.resize_mode_active = false;
+                self.current_state = AppState::Folders; // Return to default state
+                self.status_message = format!(
+                    "Resize applied: dx={}, dy={}",
+                    self.resize_delta_x, self.resize_delta_y
+                );
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                // Cancel resize and return to previous state
+                self.resize_mode_active = false;
+                self.resize_delta_x = 0;
+                self.resize_delta_y = 0;
+                self.current_state = AppState::Folders; // Return to default state
+                self.status_message = "Resize cancelled".to_string();
             }
             _ => {}
         }
@@ -434,15 +542,26 @@ impl App {
                         self.assets = cached_data.assets.clone(); // Also update assets from cache
                         self.status_message =
                             format!("Loaded {} subfolders from cache", self.folders.len());
-                        self.last_executed_command = String::from("Using cached data");
-                        self.command_history.push(self.last_executed_command.clone());
-                        self.add_log_entry(format!("[{}] ✓ CACHED: {}", Local::now().format("%H:%M:%S"), self.last_executed_command));
+                        self.last_executed_command = format!(
+                            "pcli2 folder list --folder-path \"{}\" --format json",
+                            current_path
+                        );
+                        self.command_history
+                            .push(self.last_executed_command.clone());
+                        self.add_log_entry(format!("[{}] ✓ CACHED: {} (would have executed: pcli2 folder list --folder-path \"{}\" --format json)",
+                            Local::now().format("%H:%M:%S"),
+                            self.last_executed_command,
+                            current_path));
                         return;
                     }
                 }
 
-                self.last_executed_command = format!("pcli2 folder list --folder-path {} --format json", current_path);
-                self.command_history.push(self.last_executed_command.clone());
+                self.last_executed_command = format!(
+                    "pcli2 folder list --folder-path \"{}\" --format json",
+                    current_path
+                );
+                self.command_history
+                    .push(self.last_executed_command.clone());
                 self.command_in_progress = true; // Set flag when command starts
                 self.status_message = format!("Loading subfolders for {}...", current_path);
 
@@ -512,7 +631,12 @@ impl App {
                         self.status_message = format!("Error loading subfolders: {}", e);
 
                         // Log failed command with error indicator
-                        self.add_log_entry(format!("[{}] ✗ ERROR: {} - {}", Local::now().format("%H:%M:%S"), self.last_executed_command, e));
+                        self.add_log_entry(format!(
+                            "[{}] ✗ ERROR: {} - {}",
+                            Local::now().format("%H:%M:%S"),
+                            self.last_executed_command,
+                            e
+                        ));
                         self.command_in_progress = false; // Clear flag when command completes
                     }
                 }
@@ -526,8 +650,12 @@ impl App {
 
     pub async fn load_assets_for_current_folder(&mut self) {
         if let Some(ref folder_path) = self.current_folder {
-            self.last_executed_command = format!("pcli2 asset list --folder-path {} --format json", folder_path);
-            self.command_history.push(self.last_executed_command.clone());
+            self.last_executed_command = format!(
+                "pcli2 asset list --folder-path \"{}\" --format json",
+                folder_path
+            );
+            self.command_history
+                .push(self.last_executed_command.clone());
             self.command_in_progress = true; // Set flag when command starts
             self.status_message = "Loading assets...".to_string();
 
@@ -560,14 +688,23 @@ impl App {
                     self.status_message = format!("Loaded {} assets", self.assets.len());
 
                     // Log successful command with success indicator
-                    self.add_log_entry(format!("[{}] ✓ SUCCESS: {}", Local::now().format("%H:%M:%S"), self.last_executed_command));
+                    self.add_log_entry(format!(
+                        "[{}] ✓ SUCCESS: {}",
+                        Local::now().format("%H:%M:%S"),
+                        self.last_executed_command
+                    ));
                     self.command_in_progress = false; // Clear flag when command completes
                 }
                 Err(e) => {
                     self.status_message = format!("Error loading assets: {}", e);
 
                     // Log failed command with error indicator
-                    self.add_log_entry(format!("[{}] ✗ ERROR: {} - {}", Local::now().format("%H:%M:%S"), self.last_executed_command, e));
+                    self.add_log_entry(format!(
+                        "[{}] ✗ ERROR: {} - {}",
+                        Local::now().format("%H:%M:%S"),
+                        self.last_executed_command,
+                        e
+                    ));
                     self.command_in_progress = false; // Clear flag when command completes
                 }
             }
@@ -605,17 +742,29 @@ impl App {
                     self.assets.len(),
                     selected_folder.name
                 );
-                self.last_executed_command = String::from("Using cached data");
-                self.command_history.push(self.last_executed_command.clone());
-                self.add_log_entry(format!("[{}] ✓ CACHED: {}", Local::now().format("%H:%M:%S"), self.last_executed_command));
+                self.last_executed_command = format!(
+                    "pcli2 asset list --folder-path \"{}\" --format json",
+                    selected_folder.path
+                );
+                self.command_history
+                    .push(self.last_executed_command.clone());
+                self.add_log_entry(format!(
+                    "[{}] ✓ CACHED: {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command
+                ));
                 return;
             }
         }
 
         // Set loading flag and status
         self.assets_loading_for_selection = true;
-        self.last_executed_command = format!("pcli2 asset list --folder-path {} --format json", selected_folder.path);
-        self.command_history.push(self.last_executed_command.clone());
+        self.last_executed_command = format!(
+            "pcli2 asset list --folder-path \"{}\" --format json",
+            selected_folder.path
+        );
+        self.command_history
+            .push(self.last_executed_command.clone());
         self.command_in_progress = true; // Set flag when command starts
         self.status_message = format!("Loading assets for {}...", selected_folder.name);
 
@@ -651,7 +800,11 @@ impl App {
                 );
 
                 // Log successful command with success indicator
-                self.add_log_entry(format!("[{}] ✓ SUCCESS: {}", Local::now().format("%H:%M:%S"), self.last_executed_command));
+                self.add_log_entry(format!(
+                    "[{}] ✓ SUCCESS: {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command
+                ));
                 self.command_in_progress = false; // Clear flag when command completes
             }
             Err(e) => {
@@ -659,7 +812,12 @@ impl App {
                     format!("Error loading assets for {}: {}", selected_folder.name, e);
 
                 // Log failed command with error indicator
-                self.add_log_entry(format!("[{}] ✗ ERROR: {} - {}", Local::now().format("%H:%M:%S"), self.last_executed_command, e));
+                self.add_log_entry(format!(
+                    "[{}] ✗ ERROR: {} - {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command,
+                    e
+                ));
                 self.command_in_progress = false; // Clear flag when command completes
             }
         }
@@ -684,15 +842,21 @@ impl App {
                 self.folders = cached_data.folders.clone();
                 self.status_message =
                     format!("Loaded {} top-level folders from cache", self.folders.len());
-                self.last_executed_command = String::from("Using cached data");
-                self.command_history.push(self.last_executed_command.clone());
-                self.add_log_entry(format!("[{}] ✓ CACHED: {}", Local::now().format("%H:%M:%S"), self.last_executed_command));
+                self.last_executed_command = String::from("pcli2 folder list --format json");
+                self.command_history
+                    .push(self.last_executed_command.clone());
+                self.add_log_entry(format!(
+                    "[{}] ✓ CACHED: {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command
+                ));
                 return;
             }
         }
 
         self.last_executed_command = String::from("pcli2 folder list --format json");
-        self.command_history.push(self.last_executed_command.clone());
+        self.command_history
+            .push(self.last_executed_command.clone());
         self.command_in_progress = true; // Set flag when command starts
         self.status_message = "Loading all folders...".to_string();
 
@@ -726,14 +890,23 @@ impl App {
                 self.status_message = format!("Loaded {} top-level folders", self.folders.len());
 
                 // Log successful command with success indicator
-                self.add_log_entry(format!("[{}] ✓ SUCCESS: {}", Local::now().format("%H:%M:%S"), self.last_executed_command));
+                self.add_log_entry(format!(
+                    "[{}] ✓ SUCCESS: {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command
+                ));
                 self.command_in_progress = false; // Clear flag when command completes
             }
             Err(e) => {
                 self.status_message = format!("Error loading folders: {}", e);
 
                 // Log failed command with error indicator
-                self.add_log_entry(format!("[{}] ✗ ERROR: {} - {}", Local::now().format("%H:%M:%S"), self.last_executed_command, e));
+                self.add_log_entry(format!(
+                    "[{}] ✗ ERROR: {} - {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command,
+                    e
+                ));
                 self.command_in_progress = false; // Clear flag when command completes
             }
         }
@@ -837,16 +1010,19 @@ impl App {
             return;
         }
 
-        self.last_executed_command = format!("pcli2 asset text-match --text \"{}\" --format json", self.search_query);
-        self.command_history.push(self.last_executed_command.clone());
+        self.last_executed_command = format!(
+            "pcli2 asset text-match --text \"{}\" --format json",
+            self.search_query
+        );
+        self.command_history
+            .push(self.last_executed_command.clone());
         self.command_in_progress = true; // Set flag when command starts
         self.status_message = format!("Searching for: {}", self.search_query);
 
         match pcli_commands::search_assets(&self.search_query) {
             Ok(pcli_assets) => {
-                // For now, just store the assets in the main assets list
-                // In a more sophisticated implementation, we'd show search results differently
-                self.assets = pcli_assets
+                // Store search results separately from folder assets
+                self.search_results = pcli_assets
                     .into_iter()
                     .map(|a| Asset {
                         uuid: a.uuid,
@@ -857,18 +1033,26 @@ impl App {
                     })
                     .collect();
 
-                self.current_state = AppState::Assets;
-                self.status_message = format!("Found {} assets", self.assets.len());
+                self.status_message = format!("Found {} assets", self.search_results.len());
 
                 // Log successful command with success indicator
-                self.add_log_entry(format!("[{}] ✓ SUCCESS: {}", Local::now().format("%H:%M:%S"), self.last_executed_command));
+                self.add_log_entry(format!(
+                    "[{}] ✓ SUCCESS: {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command
+                ));
                 self.command_in_progress = false; // Clear flag when command completes
             }
             Err(e) => {
                 self.status_message = format!("Search failed: {}", e);
 
                 // Log failed command with error indicator
-                self.add_log_entry(format!("[{}] ✗ ERROR: {} - {}", Local::now().format("%H:%M:%S"), self.last_executed_command, e));
+                self.add_log_entry(format!(
+                    "[{}] ✗ ERROR: {} - {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command,
+                    e
+                ));
                 self.command_in_progress = false; // Clear flag when command completes
             }
         }
@@ -897,9 +1081,77 @@ impl App {
     fn add_log_entry(&mut self, entry: String) {
         self.log_entries.push(entry);
 
-        // Auto-scroll to the bottom if the user is already at the bottom of the log
-        if self.log_scroll_position >= self.log_entries.len().saturating_sub(2) {
-            self.log_scroll_position = self.log_entries.len().saturating_sub(1);
+        // Limit log history to 200 entries
+        if self.log_entries.len() > 200 {
+            // Remove oldest entries, keeping the most recent 200
+            let excess = self.log_entries.len() - 200;
+            self.log_entries.drain(0..excess);
+
+            // Adjust scroll position if needed
+            if self.log_scroll_position >= excess {
+                self.log_scroll_position -= excess;
+            } else {
+                self.log_scroll_position = 0;
+            }
+        }
+
+        // Always auto-scroll to the bottom to show the latest log entry
+        self.log_scroll_position = self.log_entries.len().saturating_sub(1);
+    }
+}
+
+impl App {
+    pub async fn handle_mouse_event(&mut self, mouse: crossterm::event::MouseEvent) {
+        match mouse.kind {
+            crossterm::event::MouseEventKind::ScrollDown => {
+                // Handle scrolling down in the active pane
+                match self.active_pane {
+                    crate::app::ActivePane::Folders => {
+                        if !self.folders.is_empty() {
+                            self.selected_folder_index =
+                                (self.selected_folder_index + 1).min(self.folders.len() - 1);
+                        }
+                    }
+                    crate::app::ActivePane::Assets => {
+                        if !self.assets.is_empty() {
+                            self.selected_asset_index =
+                                (self.selected_asset_index + 1).min(self.assets.len() - 1);
+                        }
+                    }
+                    crate::app::ActivePane::Log => {
+                        // Scroll down in the log
+                        if self.log_scroll_position < self.log_entries.len().saturating_sub(1) {
+                            self.log_scroll_position += 1;
+                        }
+                    }
+                }
+            }
+            crossterm::event::MouseEventKind::ScrollUp => {
+                // Handle scrolling up in the active pane
+                match self.active_pane {
+                    crate::app::ActivePane::Folders => {
+                        if self.selected_folder_index > 0 {
+                            self.selected_folder_index -= 1;
+                        }
+                    }
+                    crate::app::ActivePane::Assets => {
+                        if self.selected_asset_index > 0 {
+                            self.selected_asset_index -= 1;
+                        }
+                    }
+                    crate::app::ActivePane::Log => {
+                        // Scroll up in the log
+                        if self.log_scroll_position > 0 {
+                            self.log_scroll_position -= 1;
+                        }
+                    }
+                }
+            }
+            crossterm::event::MouseEventKind::Down(_) => {
+                // Handle click events - could be extended to handle clicks on specific UI elements
+                // For now, just handle scrolling based on which pane the mouse is in
+            }
+            _ => {}
         }
     }
 }

@@ -131,7 +131,51 @@ pub fn upload_asset_to_folder(file_path: &str, folder_uuid: &str) -> Result<()> 
     Ok(())
 }
 
-use serde_json::Value;
+// Define structures for search results specifically
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SearchResultAsset {
+    #[serde(rename = "id")]
+    pub uuid: String,
+    #[serde(rename = "path")]
+    pub path: String,
+    #[serde(rename = "type")]
+    pub file_type: String,
+    #[serde(rename = "tenantId")]
+    pub tenant_id: Option<String>,
+    #[serde(rename = "folderId")]
+    pub folder_id: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<String>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: Option<String>,
+    #[serde(rename = "state")]
+    pub state: Option<String>,
+    #[serde(rename = "isAssembly")]
+    pub is_assembly: Option<bool>,
+    #[serde(rename = "file_size")]
+    pub file_size: Option<u64>,
+    #[serde(rename = "processing_status")]
+    pub processing_status: Option<String>,
+    #[serde(rename = "created_at")]
+    pub created_at_legacy: Option<String>,
+    #[serde(rename = "updated_at")]
+    pub updated_at_legacy: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SearchResultMatch {
+    asset: SearchResultAsset,
+    #[serde(rename = "comparisonUrl")]
+    comparison_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SearchResponse {
+    #[serde(rename = "searchQuery")]
+    search_query: String,
+    matches: Vec<SearchResultMatch>,
+}
 
 pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
     // Use the exact working command with JSON format: pcli2 asset text-match --text <query> --format json
@@ -146,41 +190,35 @@ pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
 
     let stdout = String::from_utf8(output.stdout)?;
 
-    // Try to parse as an array first
-    if let Ok(assets) = serde_json::from_str::<Vec<PcliAsset>>(&stdout) {
-        return Ok(assets);
-    }
+    // Parse the search results specifically using the search result structures
+    match serde_json::from_str::<SearchResponse>(&stdout) {
+        Ok(search_response) => {
+            let assets: Vec<PcliAsset> = search_response.matches.into_iter()
+                .map(|match_result| {
+                    let search_asset = match_result.asset;
+                    PcliAsset {
+                        uuid: search_asset.uuid,
+                        name: search_asset.path.split('/').last().unwrap_or(&search_asset.path).to_string(), // Extract filename from path
+                        path: search_asset.path,
+                        file_type: search_asset.file_type,
+                        file_size: search_asset.file_size,
+                        processing_status: search_asset.state.unwrap_or_else(|| "unknown".to_string()),
+                        created_at: search_asset.created_at.unwrap_or_else(|| search_asset.created_at_legacy.unwrap_or_else(|| "unknown".to_string())),
+                        updated_at: search_asset.updated_at.unwrap_or_else(|| search_asset.updated_at_legacy.unwrap_or_else(|| "unknown".to_string())),
+                        metadata: search_asset.metadata.unwrap_or_else(|| serde_json::Value::Null),
+                        is_assembly: search_asset.is_assembly.unwrap_or(false),
+                    }
+                })
+                .collect();
 
-    // If that fails, try to parse as a single object or wrapper object
-    let json_value: Value = serde_json::from_str(&stdout)?;
-
-    // Look for common patterns where the assets might be in a field
-    if let Some(assets_array) = json_value.get("assets").and_then(|v| v.as_array()) {
-        let assets: Result<Vec<PcliAsset>, _> = assets_array
-            .iter()
-            .map(|item| serde_json::from_value(item.clone()))
-            .collect();
-        if let Ok(assets) = assets {
-            return Ok(assets);
+            Ok(assets)
         }
-    } else if let Some(results_array) = json_value.get("results").and_then(|v| v.as_array()) {
-        let assets: Result<Vec<PcliAsset>, _> = results_array
-            .iter()
-            .map(|item| serde_json::from_value(item.clone()))
-            .collect();
-        if let Ok(assets) = assets {
-            return Ok(assets);
-        }
-    } else if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
-        let assets: Result<Vec<PcliAsset>, _> = data_array
-            .iter()
-            .map(|item| serde_json::from_value(item.clone()))
-            .collect();
-        if let Ok(assets) = assets {
-            return Ok(assets);
+        Err(_) => {
+            // If parsing with dedicated structures fails, return an error with the raw output
+            Err(anyhow::anyhow!(
+                "Failed to parse search results as assets. Raw output: {}",
+                stdout
+            ))
         }
     }
-
-    // If all parsing attempts fail, return an error
-    Err(anyhow::anyhow!("Failed to parse search results as assets: {}", stdout))
 }
