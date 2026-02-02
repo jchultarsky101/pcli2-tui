@@ -620,11 +620,17 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
 
     // Input section - now just the input field without a label
     // Draw the search input field with proper alignment and enhanced visual cues
+    let input_border_color = if matches!(app.search_modal_focus, crate::app::SearchModalFocus::Input) {
+        Color::Yellow // Highlight with yellow when focused (consistent with other panes)
+    } else {
+        Color::Gray // More visible color when not focused
+    };
+
     let input_field = Paragraph::new(format!("{}█", app.search_input_buffer)) // Add a visual cursor
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)) // More prominent border
+                .border_style(Style::default().fg(input_border_color).add_modifier(Modifier::BOLD)) // Highlight when focused
                 .style(Style::default().bg(Color::Rgb(40, 40, 40))), // Slightly lighter background
         )
         .style(Style::default().fg(Color::White));
@@ -682,8 +688,20 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
             .collect::<Vec<ListItem>>()
     };
 
+    // Determine border color based on focus state
+    let results_border_color = if matches!(app.search_modal_focus, crate::app::SearchModalFocus::Results) {
+        Color::Yellow // Highlight with yellow when focused (consistent with other panes)
+    } else {
+        Color::Gray // More visible color when not focused
+    };
+
     let results_list = List::new(results_list_items)
-        .block(Block::default().borders(Borders::ALL).title(results_title)) // Consistent border styling
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(results_border_color).add_modifier(Modifier::BOLD)) // Highlight when focused
+                .title(results_title)
+        ) // Consistent border styling
         .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
 
     // Render the results list

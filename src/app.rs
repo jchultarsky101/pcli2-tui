@@ -77,6 +77,13 @@ pub struct App {
     pub resize_delta_x: i32,                // Horizontal resize adjustment
     pub resize_delta_y: i32,                // Vertical resize adjustment
     pub search_results: Vec<Asset>,          // Store search results separately from folder assets
+    pub search_modal_focus: SearchModalFocus, // Track which element has focus in search modal
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchModalFocus {
+    Input,
+    Results,
 }
 
 impl App {
@@ -105,11 +112,19 @@ impl App {
             resize_delta_x: 0,
             resize_delta_y: 0,
             search_results: vec![],
+            search_modal_focus: SearchModalFocus::Input,
         }
     }
 
     pub async fn handle_key_event(&mut self, key: KeyEvent) {
+        // Handle search modal if it's active - make it modal and prevent other interactions
+        if self.show_search_modal {
+            self.handle_search_keys(key).await;
+            return;
+        }
+
         // Handle global keys that work in any state
+        // Only allow pane cycling when search modal is not active
         if key.code == KeyCode::Tab && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
         {
             // Cycle between panes forward (Tab without Alt)
@@ -167,8 +182,8 @@ impl App {
             return;
         }
 
-        // Handle log view key globally
-        if key.code == KeyCode::Char('l') {
+        // Handle log view key globally, but only when search modal is not active
+        if key.code == KeyCode::Char('l') && !self.show_search_modal {
             self.current_state = AppState::Log;
             return;
         }
@@ -438,36 +453,72 @@ impl App {
 
     async fn handle_search_keys(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char(c) if c != '\n' && c != '\t' => {
-                self.search_input_buffer.push(c);
+            KeyCode::Char(c) if c != '\n' => {
+                // Only add character if we're focused on the input field
+                if matches!(self.search_modal_focus, SearchModalFocus::Input) {
+                    self.search_input_buffer.push(c);
+                }
+            }
+            KeyCode::Tab => {
+                // Cyclic focus forward: Input -> Results -> Input -> ...
+                self.search_modal_focus = match self.search_modal_focus {
+                    SearchModalFocus::Input => SearchModalFocus::Results,
+                    SearchModalFocus::Results => SearchModalFocus::Input,
+                };
+            }
+            KeyCode::BackTab => {
+                // Cyclic focus backward: Results -> Input -> Results -> ...
+                self.search_modal_focus = match self.search_modal_focus {
+                    SearchModalFocus::Results => SearchModalFocus::Input,
+                    SearchModalFocus::Input => SearchModalFocus::Results,
+                };
             }
             KeyCode::Backspace => {
-                self.search_input_buffer.pop();
+                // Only process backspace if focused on input
+                if matches!(self.search_modal_focus, SearchModalFocus::Input) {
+                    self.search_input_buffer.pop();
+                }
             }
             KeyCode::Enter => {
-                self.search_query = self.search_input_buffer.clone();
-                self.perform_search().await;
-                // Keep the search modal open after search so users can perform additional searches
+                match self.search_modal_focus {
+                    SearchModalFocus::Input => {
+                        // Perform search when Enter is pressed in input field
+                        self.search_query = self.search_input_buffer.clone();
+                        self.perform_search().await;
+                        // Switch focus to results after search
+                        self.search_modal_focus = SearchModalFocus::Results;
+                    }
+                    SearchModalFocus::Results => {
+                        // Allow user to go back to input field when Enter is pressed in results
+                        self.search_modal_focus = SearchModalFocus::Input;
+                    }
+                }
             }
             KeyCode::Esc => {
                 self.show_search_modal = false;
                 self.search_input_buffer.clear();
+                self.search_modal_focus = SearchModalFocus::Input; // Reset focus
             }
             KeyCode::Down => {
-                // Navigate down in search results
-                if !self.search_results.is_empty() {
-                    self.selected_asset_index =
-                        (self.selected_asset_index + 1).min(self.search_results.len() - 1);
+                // Navigate down in search results only if focused on results
+                if matches!(self.search_modal_focus, SearchModalFocus::Results) {
+                    if !self.search_results.is_empty() {
+                        self.selected_asset_index =
+                            (self.selected_asset_index + 1).min(self.search_results.len() - 1);
+                    }
                 }
             }
             KeyCode::Up => {
-                // Navigate up in search results
-                if self.selected_asset_index > 0 {
-                    self.selected_asset_index -= 1;
+                // Navigate up in search results only if focused on results
+                if matches!(self.search_modal_focus, SearchModalFocus::Results) {
+                    if self.selected_asset_index > 0 {
+                        self.selected_asset_index -= 1;
+                    }
                 }
             }
             KeyCode::Char('d')
-                if !self.search_results.is_empty() && self.selected_asset_index < self.search_results.len() =>
+                if matches!(self.search_modal_focus, SearchModalFocus::Results) &&
+                   !self.search_results.is_empty() && self.selected_asset_index < self.search_results.len() =>
             {
                 // Download selected asset from search results
                 let asset_uuid = self.search_results[self.selected_asset_index].uuid.clone();
