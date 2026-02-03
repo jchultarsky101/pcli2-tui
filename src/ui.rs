@@ -1,11 +1,12 @@
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, Asset};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Clear,
     widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Cell, Row, Table},
 };
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -154,28 +155,149 @@ fn draw_assets_panel(f: &mut Frame, area: Rect, app: &mut App) {
         Color::Rgb(100, 100, 100)  // Muted gray for inactive
     };
 
-    // Determine the title based on whether we're loading assets for selection
     let title = if app.assets_loading_for_selection {
         " 📎 Assets - Loading... ".to_string()
     } else {
         " 📎 Asset(s) ".to_string()
     };
 
-    let items: Vec<ListItem> = if app.assets_loading_for_selection {
-        // Show a loading indicator
-        vec![ListItem::new(Line::from(Span::styled(
-            "⏳ Loading assets...",
-            Style::default()
-                .fg(Color::Rgb(100, 149, 237))  // Cornflower blue
-                .add_modifier(Modifier::ITALIC),
-        )))]
+    // Extract all unique metadata keys from assets
+    let mut all_metadata_keys = std::collections::HashSet::<String>::new();
+    for asset in &app.assets {
+        if let Some(obj) = asset.metadata.as_object() {
+            for key in obj.keys() {
+                // Special handling for the case where metadata contains a "meta" key that wraps actual metadata
+                if key == "meta" {
+                    // If the "meta" key contains an object, extract keys from that object instead
+                    if let Some(meta_obj) = obj.get(key).and_then(|v| v.as_object()) {
+                        for meta_key in meta_obj.keys() {
+                            all_metadata_keys.insert(meta_key.clone());
+                        }
+                    } else {
+                        // If "meta" doesn't contain an object, use it as a regular key
+                        all_metadata_keys.insert(key.clone());
+                    }
+                } else {
+                    // Regular handling for other keys
+                    all_metadata_keys.insert(key.clone());
+                }
+            }
+        }
+    }
+
+    // Convert to sorted vector
+    let mut sorted_metadata_keys: Vec<String> = all_metadata_keys.into_iter().collect();
+    sorted_metadata_keys.sort();
+
+    // Define headers for the table
+    let mut headers = vec!["", "Name", "Path"]; // Icon, Name, Path (removed Type column)
+    for key in &sorted_metadata_keys {
+        headers.push(key.as_str());
+    }
+
+    // Calculate optimal column widths based on content
+    let column_widths = if app.assets.is_empty() {
+        // Default widths when no assets
+        let mut widths = vec![
+            Constraint::Length(3),  // Icon column (single character + padding)
+            Constraint::Min(15),    // Name column (minimum width for readability)
+            Constraint::Min(15),    // Path column (minimum width for readability)
+        ];
+
+        // Add constraints for metadata columns
+        for _ in &sorted_metadata_keys {
+            widths.push(Constraint::Min(10)); // Minimum width for metadata columns
+        }
+        widths
     } else {
-        app.assets
+        // Calculate max lengths for each column based on content
+        let max_icon_len = 1; // Icons are single characters (don't need mut)
+        let mut max_name_len = "Name".len(); // Minimum width based on header
+        let mut max_path_len = "Path".len(); // Minimum width based on header
+
+        // Calculate max lengths for metadata columns
+        let mut max_metadata_lengths = Vec::new();
+        for key in &sorted_metadata_keys {
+            // Initialize with header length
+            max_metadata_lengths.push(key.len());
+        }
+
+        // Iterate through assets to find max content lengths
+        for asset in &app.assets {
+            // Update max name length
+            max_name_len = std::cmp::max(max_name_len, asset.name.len());
+
+            // Update max path length
+            max_path_len = std::cmp::max(max_path_len, asset.folder_uuid.len());
+
+            // Update max metadata lengths
+            if let Some(obj) = asset.metadata.as_object() {
+                for (i, key) in sorted_metadata_keys.iter().enumerate() {
+                    if let Some(value) = obj.get(key) {
+                        // Handle string values to get actual length without quotes
+                        let value_str = if let Some(str_val) = value.as_str() {
+                            str_val
+                        } else {
+                            &value.to_string()
+                        };
+
+                        if i < max_metadata_lengths.len() {
+                            max_metadata_lengths[i] = std::cmp::max(max_metadata_lengths[i], value_str.len());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create constraints based on calculated widths - optimizing for minimal real estate
+        let mut widths = vec![
+            Constraint::Length((max_icon_len + 1) as u16),  // Icon column with minimal padding
+            Constraint::Length((max_name_len + 1) as u16), // Name column with minimal padding
+            Constraint::Length((max_path_len + 1) as u16), // Path column with minimal padding
+        ];
+
+        // Add constraints for each metadata column with minimal padding
+        for max_len in max_metadata_lengths {
+            widths.push(Constraint::Length((max_len + 1) as u16)); // Minimal padding of 1 character
+        }
+
+        widths
+    };
+
+    if app.assets_loading_for_selection {
+        // Show a loading indicator in a centered way with the frame
+        let loading_text = Paragraph::new("⏳ Loading assets...")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
+            )
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(100, 149, 237))); // Cornflower blue
+
+        f.render_widget(loading_text, area);
+    } else if app.assets.is_empty() {
+        // Show a centered "No data to display" message with the frame
+        let no_data_text = Paragraph::new("No data to display")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
+            )
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(100, 100, 100))); // Muted gray
+
+        f.render_widget(no_data_text, area);
+    } else {
+        // Create table rows
+        let rows = app.assets
             .iter()
             .enumerate()
             .map(|(i, asset)| {
                 let is_selected = i == app.selected_asset_index;
-                let style = if is_selected {
+                let row_style = if is_selected {
                     Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)  // Forest green for selection
                 } else {
                     Style::default().fg(Color::Rgb(255, 215, 0))  // Gold for unselected
@@ -192,26 +314,88 @@ fn draw_assets_panel(f: &mut Frame, area: Rect, app: &mut App) {
                     _ => "📄",          // Default document icon
                 };
 
-                let content = Line::from(vec![Span::styled(
-                    format!("{} {}", icon, asset.name),
-                    style,
-                )]);
+                // Create cells for the basic columns
+                let mut cells = vec![
+                    Cell::from(icon), // Icon cell
+                    Cell::from(asset.name.as_str()), // Name cell
+                    Cell::from(asset.folder_uuid.as_str()), // Path cell
+                ];
 
-                ListItem::new(content)
+                // Add cells for each metadata key
+                if let Some(obj) = asset.metadata.as_object() {
+                    for key in &sorted_metadata_keys {
+                        // Special handling for the case where actual metadata is nested under a "meta" key
+                        let value = if obj.contains_key("meta") {
+                            // Check if the key exists in the nested "meta" object
+                            if let Some(meta_obj) = obj.get("meta").and_then(|v| v.as_object()) {
+                                if let Some(meta_value) = meta_obj.get(key) {
+                                    // Handle string values to remove quotes
+                                    if let Some(str_val) = meta_value.as_str() {
+                                        str_val.to_string()
+                                    } else {
+                                        meta_value.to_string() // For non-string values, keep the JSON representation
+                                    }
+                                } else {
+                                    "".to_string()
+                                }
+                            } else {
+                                // If "meta" doesn't contain an object, fall back to regular lookup
+                                if let Some(value) = obj.get(key) {
+                                    if let Some(str_val) = value.as_str() {
+                                        str_val.to_string()
+                                    } else {
+                                        value.to_string() // For non-string values, keep the JSON representation
+                                    }
+                                } else {
+                                    "".to_string()
+                                }
+                            }
+                        } else {
+                            // Regular lookup if there's no "meta" key
+                            if let Some(value) = obj.get(key) {
+                                if let Some(str_val) = value.as_str() {
+                                    str_val.to_string()
+                                } else {
+                                    value.to_string() // For non-string values, keep the JSON representation
+                                }
+                            } else {
+                                "".to_string()
+                            }
+                        };
+                        cells.push(create_cell_with_alignment(value));
+                    }
+                } else {
+                    // If no metadata, add empty cells for all metadata columns
+                    for _ in &sorted_metadata_keys {
+                        cells.push(create_cell_with_alignment("".to_string()));
+                    }
+                }
+
+                Row::new(cells).style(row_style)
             })
-            .collect()
-    };
+            .collect::<Vec<Row>>();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
+        // Create the table
+        let table = Table::new(
+            rows,
+            column_widths,
         )
-        .highlight_style(Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White));  // Forest green highlight
+            .header(
+                Row::new(headers.iter().map(|&h| Cell::from(h)))
+                .style(Style::default().fg(Color::Rgb(255, 215, 0))) // Gold header text
+                .bottom_margin(1)
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(border_color).add_modifier(Modifier::BOLD)),
+            )
+            .highlight_style(Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)) // Forest green highlight
+            .column_spacing(1); // Add spacing between columns for better readability
 
-    f.render_widget(list, area);
+        f.render_widget(table, area);
+    }
 }
 
 fn draw_search_view(f: &mut Frame, area: Rect, app: &App) {
@@ -751,9 +935,52 @@ fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(results_list, chunks[1]);
 }
 
+// Helper function to determine if a value is numeric and format it appropriately
+fn create_cell_with_alignment(value: String) -> Cell<'static> {
+    // Try to parse as a number (integer or float)
+    if value.parse::<f64>().is_ok() {
+        // If it's a valid number, right-align it by wrapping it in a right-aligned Line
+        Cell::from(Line::from(Span::raw(value)).alignment(Alignment::Right))
+    } else {
+        // For non-numeric values, use default left alignment
+        Cell::from(value)
+    }
+}
+
+// Generic function to extract metadata keys from a list of assets
+fn extract_metadata_keys(assets: &[(Asset, f64)]) -> Vec<String> {
+    let mut all_metadata_keys = std::collections::HashSet::<String>::new();
+    for (asset, _) in assets {
+        if let Some(obj) = asset.metadata.as_object() {
+            for key in obj.keys() {
+                // Special handling for the case where metadata contains a "meta" key that wraps actual metadata
+                if key == "meta" {
+                    // If the "meta" key contains an object, extract keys from that object instead
+                    if let Some(meta_obj) = obj.get(key).and_then(|v| v.as_object()) {
+                        for meta_key in meta_obj.keys() {
+                            all_metadata_keys.insert(meta_key.clone());
+                        }
+                    } else {
+                        // If "meta" doesn't contain an object, use it as a regular key
+                        all_metadata_keys.insert(key.clone());
+                    }
+                } else {
+                    // Regular handling for other keys
+                    all_metadata_keys.insert(key.clone());
+                }
+            }
+        }
+    }
+
+    // Convert to sorted vector
+    let mut sorted_metadata_keys: Vec<String> = all_metadata_keys.into_iter().collect();
+    sorted_metadata_keys.sort();
+    sorted_metadata_keys
+}
+
 fn draw_geometric_match_modal(f: &mut Frame, area: Rect, app: &App) {
-    // Create a centered modal window
-    let popup_area = centered_rect(60, 40, area);
+    // Create a larger centered modal window (80% of screen)
+    let popup_area = centered_rect(80, 80, area);
 
     // Clear the background first
     f.render_widget(Clear, popup_area);
@@ -775,67 +1002,242 @@ fn draw_geometric_match_modal(f: &mut Frame, area: Rect, app: &App) {
         height: popup_area.height - 2,
     };
 
-    // Results section
-    let results_title = format!(" Results ({}) ", app.geometric_match_results.len()); // Renamed to "Results" and padded with spaces
+    // Extract metadata keys using the generic function
+    let sorted_metadata_keys = extract_metadata_keys(&app.geometric_match_results);
 
-    let results_list_items = if app.command_in_progress {
-        // Show a searching indicator when command is in progress
-        vec![ListItem::new(
-            Line::from(Span::styled(
-                "Processing geometric match...",
-                Style::default().fg(Color::Yellow)
-            ))
-        )]
-    } else if app.geometric_match_results.is_empty() {
-        // Show a message when there are no geometric match results
-        vec![ListItem::new(
-            Line::from(Span::styled(
-                "No geometric matches found",
-                Style::default().fg(Color::DarkGray)
-            ))
-        )]
+    // Calculate width for each column based on max content length
+    let column_widths = if app.geometric_match_results.is_empty() {
+        // Default widths when no results
+        let mut widths = vec![
+            Constraint::Length(3),  // Icon column
+            Constraint::Min(15),    // Name column
+            Constraint::Min(15),    // Folder Path column
+            Constraint::Length(12), // Similarity Score column
+        ];
+
+        for _ in &sorted_metadata_keys {
+            widths.push(Constraint::Min(10));
+        }
+        widths
     } else {
-        app.geometric_match_results
+        // Calculate max lengths for each column
+        let max_icon_len = 1; // Icons are single characters (don't need mut)
+        let mut max_name_len = "Name".len(); // Minimum width based on header
+        let mut max_path_len = "Folder Path".len(); // Minimum width based on header
+        let mut max_similarity_len = "Similarity".len(); // Minimum width based on header
+
+        // Calculate max lengths for metadata columns
+        let mut max_metadata_lengths = Vec::new();
+        for key in &sorted_metadata_keys {
+            // Initialize with header length
+            max_metadata_lengths.push(key.len());
+        }
+
+        // Iterate through results to find max content lengths
+        for (asset, similarity_score) in &app.geometric_match_results {
+            // Update max name length
+            max_name_len = std::cmp::max(max_name_len, asset.name.len());
+
+            // Update max path length
+            let folder_path = asset.path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(&asset.path);
+            max_path_len = std::cmp::max(max_path_len, folder_path.len());
+
+            // Update max similarity length
+            let similarity_text = format!("{:.2}%", (similarity_score * 100.0).round() / 100.0);
+            max_similarity_len = std::cmp::max(max_similarity_len, similarity_text.len());
+
+            // Update max metadata lengths
+            if let Some(obj) = asset.metadata.as_object() {
+                for (i, key) in sorted_metadata_keys.iter().enumerate() {
+                    if let Some(value) = obj.get(key) {
+                        // Handle string values to get actual length without quotes
+                        let value_str = if let Some(str_val) = value.as_str() {
+                            str_val
+                        } else {
+                            &value.to_string()
+                        };
+
+                        if i < max_metadata_lengths.len() {
+                            max_metadata_lengths[i] = std::cmp::max(max_metadata_lengths[i], value_str.len());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create constraints based on calculated widths - optimizing for minimal real estate
+        let mut widths = vec![
+            Constraint::Length(max_icon_len as u16 + 1),  // Icon column with minimal padding
+            Constraint::Length(max_name_len as u16 + 1), // Name column with minimal padding
+            Constraint::Length(max_path_len as u16 + 1), // Folder Path column with minimal padding
+            Constraint::Length(max_similarity_len as u16 + 1), // Similarity Score column with minimal padding
+        ];
+
+        // Add constraints for each metadata column with minimal padding
+        for max_len in max_metadata_lengths {
+            widths.push(Constraint::Length((max_len + 1) as u16)); // Minimal padding of 1 character
+        }
+        widths
+    };
+
+    if app.command_in_progress {
+        // Show a searching indicator when command is in progress with the frame
+        let searching_text = Paragraph::new("⏳ Processing geometric match...")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD)) // Gold border
+                    .title(" 🔍 Geometric Match Results "), // Title for consistency
+            )
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Yellow));
+
+        f.render_widget(searching_text, inner_area);
+    } else if app.geometric_match_results.is_empty() {
+        // Show a centered "No data to display" message with the frame
+        let no_data_text = Paragraph::new("No data to display")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD)) // Gold border
+                    .title(format!(" Results ({}) ", app.geometric_match_results.len())), // Title with count
+            )
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(100, 100, 100))); // Muted gray
+
+        f.render_widget(no_data_text, inner_area);
+    } else {
+        // Create table rows
+        let rows = app.geometric_match_results
             .iter()
             .enumerate()
-            .map(|(i, asset)| {
-                let is_selected = i == app.selected_asset_index; // Using selected_asset_index for now
-                let style = if is_selected {
+            .map(|(i, (asset, similarity_score))| {
+                let is_selected = i == app.geometric_match_scroll_position; // Use geometric match scroll position
+                let row_style = if is_selected {
                     Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White) // Forest green to match other selections
                 } else {
-                    Style::default().fg(Color::Rgb(255, 255, 0)) // Gold to match other unselected items
+                    Style::default().fg(Color::Rgb(200, 200, 200)) // Light gray for readability
                 };
 
                 let icon = match asset.file_type.as_str() {
                     "model" => "🏗️",    // Building/construction icon for 3D models
-                    "document" => "📄", // Document icon
+                    "document" => "📝", // Document icon
                     "image" => "🖼️",    // Image icon
-                    "video" => "🎬",    // Video icon
-                    "audio" => "🎵",    // Audio icon
+                    "video" => "🎥",    // Video icon
+                    "audio" => "🎧",    // Audio icon
                     "archive" => "📦",  // Archive icon
                     "code" => "💻",     // Code/icon
                     _ => "📁",          // Default folder icon
                 };
 
-                let content = Line::from(vec![Span::styled(
-                    format!("{} {}", icon, asset.name),
-                    style,
-                )]);
+                // Format the similarity score as a percentage with right alignment
+                let similarity_percent = (similarity_score * 100.0).round() / 100.0; // Round to 2 decimal places
+                let similarity_formatted = format!("{:>8.2}%", similarity_percent); // Right-align with padding
+                let similarity_cell = Cell::from(similarity_formatted)
+                    .style(if is_selected {
+                        Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::Rgb(173, 216, 230)) // Lighter text for similarity in selected item
+                    } else {
+                        Style::default().fg(Color::Rgb(173, 216, 230)) // Light blue for similarity in unselected items
+                    });
 
-                ListItem::new(content)
+                // Extract folder path from asset path
+                let folder_path = asset.path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(&asset.path);
+
+                // Create cells for the basic columns
+                let mut cells = vec![
+                    Cell::from(icon), // Icon cell
+                    Cell::from(asset.name.as_str()), // Name cell (left-aligned by default)
+                    Cell::from(folder_path), // Folder Path cell (left-aligned by default)
+                    similarity_cell, // Similarity cell (right-aligned)
+                ];
+
+                // Add cells for each metadata key
+                if let Some(obj) = asset.metadata.as_object() {
+                    for key in &sorted_metadata_keys {
+                        // Special handling for the case where actual metadata is nested under a "meta" key
+                        let value = if obj.contains_key("meta") {
+                            // Check if the key exists in the nested "meta" object
+                            if let Some(meta_obj) = obj.get("meta").and_then(|v| v.as_object()) {
+                                if let Some(meta_value) = meta_obj.get(key) {
+                                    // Handle string values to remove quotes
+                                    if let Some(str_val) = meta_value.as_str() {
+                                        str_val.to_string()
+                                    } else {
+                                        meta_value.to_string() // For non-string values, keep the JSON representation
+                                    }
+                                } else {
+                                    "".to_string()
+                                }
+                            } else {
+                                // If "meta" doesn't contain an object, fall back to regular lookup
+                                if let Some(value) = obj.get(key) {
+                                    if let Some(str_val) = value.as_str() {
+                                        str_val.to_string()
+                                    } else {
+                                        value.to_string() // For non-string values, keep the JSON representation
+                                    }
+                                } else {
+                                    "".to_string()
+                                }
+                            }
+                        } else {
+                            // Regular lookup if there's no "meta" key
+                            if let Some(value) = obj.get(key) {
+                                if let Some(str_val) = value.as_str() {
+                                    str_val.to_string()
+                                } else {
+                                    value.to_string() // For non-string values, keep the JSON representation
+                                }
+                            } else {
+                                "".to_string()
+                            }
+                        };
+                        cells.push(create_cell_with_alignment(value));
+                    }
+                } else {
+                    // If metadata is not an object, add empty cells for all metadata columns
+                    for _ in &sorted_metadata_keys {
+                        cells.push(create_cell_with_alignment("".to_string()));
+                    }
+                }
+
+                Row::new(cells).style(row_style)
             })
-            .collect::<Vec<ListItem>>()
-    };
+            .collect::<Vec<Row>>();
 
-    let results_list = List::new(results_list_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD)) // Gold border
-                .title(results_title)
-        ) // Consistent border styling
-        .highlight_style(Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)); // Forest green highlight
+        // Create headers for the table
+        let mut headers = vec![
+            Cell::from(""), // Empty header for icon column
+            Cell::from("Name"),
+            Cell::from("Folder Path"),
+            Cell::from("Similarity  "), // Extra spaces to align with right-aligned content
+        ];
 
-    // Render the results list
-    f.render_widget(results_list, inner_area);
+        // Add headers for each metadata key
+        for key in &sorted_metadata_keys {
+            headers.push(Cell::from(key.as_str()));
+        }
+
+        // Create the table
+        let table = Table::new(
+            rows,
+            column_widths,
+        )
+            .header(
+                Row::new(headers)
+                .style(Style::default().fg(Color::Rgb(255, 215, 0))) // Gold header text
+                .bottom_margin(1)
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD)) // Gold border
+                    .title(format!(" Results ({}) ", app.geometric_match_results.len())), // Title with count
+            )
+            .highlight_style(Style::default().bg(Color::Rgb(34, 139, 34)).fg(Color::White)) // Forest green highlight
+            .column_spacing(1); // Add spacing between columns for better readability
+
+        // Render the table
+        f.render_widget(table, inner_area);
+    }
 }

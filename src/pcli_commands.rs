@@ -3,6 +3,33 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetDetails {
+    #[serde(rename = "id")]
+    pub uuid: String,
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub file_type: String,
+    #[serde(rename = "file_size")]
+    pub file_size: Option<u64>,
+    #[serde(rename = "processing_status")]
+    pub processing_status: String,
+    #[serde(rename = "created_at")]
+    pub created_at: String,
+    #[serde(rename = "updated_at")]
+    pub updated_at: String,
+    pub metadata: serde_json::Value,
+    #[serde(rename = "is_assembly")]
+    pub is_assembly: bool,
+    #[serde(rename = "tenantId")]
+    pub tenant_id: String,
+    #[serde(rename = "folderId")]
+    pub folder_id: String,
+    #[serde(rename = "state")]
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcliFolder {
     pub id: String,
     pub name: String,
@@ -83,6 +110,7 @@ pub fn list_assets_in_folder(folder_path: &str) -> Result<Vec<PcliAsset>> {
             folder_path,
             "--format",
             "json",
+            "--metadata",  // Include metadata in the asset listing
         ])
         .output()?;
 
@@ -177,6 +205,22 @@ struct SearchResponse {
     matches: Vec<SearchResultMatch>,
 }
 
+pub fn get_asset_details(asset_uuid: &str) -> Result<AssetDetails> {
+    let output = Command::new("pcli2")
+        .args(["asset", "get", "--uuid", asset_uuid, "--format", "json"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("pcli2 asset get failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let asset_details: AssetDetails = serde_json::from_str(&stdout)?;
+
+    Ok(asset_details)
+}
+
 pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
     // Use the exact working command with JSON format: pcli2 asset text-match --text <query> --format json
     let output = Command::new("pcli2")
@@ -223,49 +267,16 @@ pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GeometricMatchAsset {
-    #[serde(rename = "id")]
-    pub uuid: String,
-    pub name: String,
-    pub path: String,
-    #[serde(rename = "type")]
-    pub file_type: String,
-    #[serde(rename = "file_size")]
-    pub file_size: Option<u64>,
-    #[serde(rename = "processing_status")]
-    pub processing_status: String,
-    #[serde(rename = "created_at")]
-    pub created_at: String,
-    #[serde(rename = "updated_at")]
-    pub updated_at: String,
-    pub metadata: serde_json::Value,
-    #[serde(rename = "is_assembly")]
-    pub is_assembly: bool,
-    #[serde(rename = "state")]
-    pub state: String,
-    #[serde(rename = "tenantId")]
-    pub tenant_id: String,
-    #[serde(rename = "folderId")]
-    pub folder_id: String,
+
+// Structure to represent a geometric match result with the asset and its similarity score
+#[derive(Debug, Clone)]
+pub struct GeometricMatchEntry {
+    pub asset: PcliAsset,
+    pub similarity_score: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GeometricMatchResult {
-    asset: GeometricMatchAsset,
-    #[serde(rename = "similarityScore")]
-    similarity_score: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GeometricMatchResponse {
-    #[serde(rename = "assetId")]
-    asset_id: String,
-    matches: Vec<GeometricMatchResult>,
-}
-
-pub fn geometric_match(asset_uuid: &str) -> Result<Vec<PcliAsset>> {
-    // Use the geometric-match command with JSON format
+pub fn geometric_match(asset_uuid: &str) -> Result<Vec<GeometricMatchEntry>> {
+    // Use the geometric-match command with JSON format and metadata
     let output = Command::new("pcli2")
         .args([
             "asset",
@@ -274,6 +285,7 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<PcliAsset>> {
             asset_uuid,
             "--format",
             "json",
+            "--metadata",
         ])
         .output()?;
 
@@ -284,35 +296,200 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<PcliAsset>> {
 
     let stdout = String::from_utf8(output.stdout)?;
 
-    // Parse the geometric match response
-    match serde_json::from_str::<GeometricMatchResponse>(&stdout) {
-        Ok(response) => {
-            let assets: Vec<PcliAsset> = response.matches.into_iter()
-                .map(|match_result| {
-                    let geom_asset = match_result.asset;
-                    PcliAsset {
-                        uuid: geom_asset.uuid,
-                        name: geom_asset.path.split('/').last().unwrap_or(&geom_asset.path).to_string(), // Extract filename from path
-                        path: geom_asset.path,
-                        file_type: geom_asset.file_type,
-                        file_size: geom_asset.file_size,
-                        processing_status: geom_asset.state, // Use state as processing_status
-                        created_at: geom_asset.created_at,
-                        updated_at: geom_asset.updated_at,
-                        metadata: geom_asset.metadata,
-                        is_assembly: geom_asset.is_assembly,
-                    }
-                })
-                .collect();
+    // Parse the geometric match response with more flexible parsing
+    match serde_json::from_str::<serde_json::Value>(&stdout) {
+        Ok(json_value) => {
+            // Try different possible JSON structures that the geometric-match command might return
 
-            Ok(assets)
-        }
-        Err(_) => {
-            // If parsing with dedicated structures fails, return an error with the raw output
+            // Case 1: Standard structure with matches array
+            if let Some(matches_array) = json_value.get("matches").and_then(|v| v.as_array()) {
+                let mut match_entries = Vec::new();
+
+                for match_item in matches_array {
+                    if let Some(asset_obj) = match_item.get("asset").and_then(|v| v.as_object()) {
+                        // Try to extract asset properties from the object
+                        let uuid = asset_obj.get("id")
+                            .or_else(|| asset_obj.get("uuid"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let path = asset_obj.get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let name = asset_obj.get("name")
+                            .or_else(|| asset_obj.get("filename"))  // Alternative field name
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(path.split('/').last().unwrap_or(""))
+                            .to_string();
+
+                        let file_type = asset_obj.get("type")
+                            .or_else(|| asset_obj.get("file_type"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let file_size = asset_obj.get("file_size")
+                            .or_else(|| asset_obj.get("size"))
+                            .and_then(|v| v.as_u64());
+
+                        let processing_status = asset_obj.get("state")
+                            .or_else(|| asset_obj.get("processing_status"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let created_at = asset_obj.get("created_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let updated_at = asset_obj.get("updated_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let metadata = asset_obj.get("metadata")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::Value::Null);
+
+                        let is_assembly = asset_obj.get("is_assembly")
+                            .or_else(|| asset_obj.get("isAssembly"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        let asset = PcliAsset {
+                            uuid: uuid,
+                            name: name,
+                            path: path,
+                            file_type: file_type,
+                            file_size: file_size,
+                            processing_status: processing_status,
+                            created_at: created_at,
+                            updated_at: updated_at,
+                            metadata: metadata,
+                            is_assembly: is_assembly,
+                        };
+
+                        // Extract the similarity score from the match item
+                        let similarity_score = match_item.get("similarityScore")
+                            .or_else(|| match_item.get("score"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+
+                        let match_entry = GeometricMatchEntry {
+                            asset,
+                            similarity_score,
+                        };
+
+                        match_entries.push(match_entry);
+                    }
+                }
+
+                return Ok(match_entries);
+            }
+
+            // Case 2: Direct array of assets (fallback)
+            if let Some(assets_array) = json_value.as_array() {
+                let mut match_entries = Vec::new();
+
+                for asset_value in assets_array {
+                    if let Some(asset_obj) = asset_value.as_object() {
+                        // Extract asset properties from the object
+                        let uuid = asset_obj.get("id")
+                            .or_else(|| asset_obj.get("uuid"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let path = asset_obj.get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let name = asset_obj.get("name")
+                            .or_else(|| asset_obj.get("filename"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(path.split('/').last().unwrap_or(""))
+                            .to_string();
+
+                        let file_type = asset_obj.get("type")
+                            .or_else(|| asset_obj.get("file_type"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let file_size = asset_obj.get("file_size")
+                            .or_else(|| asset_obj.get("size"))
+                            .and_then(|v| v.as_u64());
+
+                        let processing_status = asset_obj.get("state")
+                            .or_else(|| asset_obj.get("processing_status"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let created_at = asset_obj.get("created_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let updated_at = asset_obj.get("updated_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let metadata = asset_obj.get("metadata")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::Value::Null);
+
+                        let is_assembly = asset_obj.get("is_assembly")
+                            .or_else(|| asset_obj.get("isAssembly"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        let asset = PcliAsset {
+                            uuid: uuid,
+                            name: name,
+                            path: path,
+                            file_type: file_type,
+                            file_size: file_size,
+                            processing_status: processing_status,
+                            created_at: created_at,
+                            updated_at: updated_at,
+                            metadata: metadata,
+                            is_assembly: is_assembly,
+                        };
+
+                        // For direct arrays, assign a default similarity score
+                        let match_entry = GeometricMatchEntry {
+                            asset,
+                            similarity_score: 0.0, // Default score for fallback case
+                        };
+
+                        match_entries.push(match_entry);
+                    }
+                }
+
+                return Ok(match_entries);
+            }
+
+            // If no known structure is found, return an error with the raw output
             Err(anyhow::anyhow!(
-                "Failed to parse geometric match results as assets. Raw output: {}",
+                "Failed to parse geometric match results as assets. Unknown JSON structure. Raw output: {}",
+                stdout
+            ))
+        }
+        Err(e) => {
+            // If JSON parsing fails completely, return an error
+            Err(anyhow::anyhow!(
+                "Failed to parse geometric match response as JSON: {}. Raw output: {}",
+                e,
                 stdout
             ))
         }
     }
 }
+

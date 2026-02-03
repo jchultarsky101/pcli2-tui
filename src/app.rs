@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::pcli_commands;
 use chrono::prelude::*;
 use std::collections::HashMap;
+use arboard;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Folder {
@@ -23,6 +24,8 @@ pub struct Asset {
     pub folder_uuid: String,
     pub file_type: String,
     pub size: Option<u64>,
+    pub path: String,        // Add path field to store the full path
+    pub metadata: serde_json::Value,  // Add metadata field
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +55,6 @@ pub enum ActivePane {
     Log,
 }
 
-#[derive(Debug)]
 pub struct App {
     pub current_state: AppState,
     pub folders: Vec<Folder>,
@@ -79,15 +81,75 @@ pub struct App {
     pub search_results: Vec<Asset>,          // Store search results separately from folder assets
     pub search_modal_focus: SearchModalFocus, // Track which element has focus in search modal
     pub selected_search_result_index: usize,  // Track selected index in search results separately
-    pub geometric_match_results: Vec<Asset>,  // Store geometric match results
+    pub geometric_match_results: Vec<(Asset, f64)>,  // Store geometric match results with similarity scores
     pub show_geometric_match_modal: bool,     // Whether to show the geometric match modal
+    pub geometric_match_scroll_position: usize, // Track scroll position in geometric match results
+    pub geometric_match_horizontal_scroll: u16, // Track horizontal scroll position for many columns
+    pub show_asset_details_modal: bool,       // Whether to show the asset details modal
+    pub selected_asset_details: Option<AssetDetails>, // Details of the selected asset
     pub last_entered_folder_path: Option<String>, // Track the last folder entered to re-select it when going back
+    pub clipboard: Option<arboard::Clipboard>, // Clipboard for copying log entries
+}
+
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App")
+            .field("current_state", &self.current_state)
+            .field("folders", &self.folders)
+            .field("assets", &self.assets)
+            .field("current_folder", &self.current_folder)
+            .field("selected_folder_index", &self.selected_folder_index)
+            .field("selected_asset_index", &self.selected_asset_index)
+            .field("search_query", &self.search_query)
+            .field("status_message", &self.status_message)
+            .field("should_quit", &self.should_quit)
+            .field("active_pane", &self.active_pane)
+            .field("folder_cache", &self.folder_cache)
+            .field("assets_loading_for_selection", &self.assets_loading_for_selection)
+            .field("last_executed_command", &self.last_executed_command)
+            .field("command_history", &self.command_history)
+            .field("log_entries", &self.log_entries)
+            .field("log_scroll_position", &self.log_scroll_position)
+            .field("show_search_modal", &self.show_search_modal)
+            .field("search_input_buffer", &self.search_input_buffer)
+            .field("command_in_progress", &self.command_in_progress)
+            .field("resize_mode_active", &self.resize_mode_active)
+            .field("resize_delta_x", &self.resize_delta_x)
+            .field("resize_delta_y", &self.resize_delta_y)
+            .field("search_results", &self.search_results)
+            .field("search_modal_focus", &self.search_modal_focus)
+            .field("selected_search_result_index", &self.selected_search_result_index)
+            .field("geometric_match_results", &self.geometric_match_results)
+            .field("show_geometric_match_modal", &self.show_geometric_match_modal)
+            .field("show_asset_details_modal", &self.show_asset_details_modal)
+            .field("selected_asset_details", &self.selected_asset_details)
+            .field("last_entered_folder_path", &self.last_entered_folder_path)
+            .field("clipboard", &"Option<Clipboard>") // Skip printing clipboard content
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchModalFocus {
     Input,
     Results,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AssetDetails {
+    pub uuid: String,
+    pub name: String,
+    pub path: String,
+    pub file_type: String,
+    pub file_size: Option<u64>,
+    pub processing_status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub is_assembly: bool,
+    pub tenant_id: String,
+    pub folder_id: String,
+    pub state: String,
 }
 
 impl App {
@@ -120,16 +182,52 @@ impl App {
             selected_search_result_index: 0,
             geometric_match_results: vec![],
             show_geometric_match_modal: false,
+            geometric_match_scroll_position: 0,
+            geometric_match_horizontal_scroll: 0,
+            show_asset_details_modal: false,
+            selected_asset_details: None,
             last_entered_folder_path: None,
+            clipboard: {
+                // Initialize the clipboard if available
+                match arboard::Clipboard::new() {
+                    Ok(clipboard) => Some(clipboard),
+                    Err(_) => {
+                        // If clipboard initialization fails, continue without it
+                        None
+                    }
+                }
+            },
+        }
+    }
+
+    pub fn copy_selected_log_entry_to_clipboard(&mut self) {
+        if !self.log_entries.is_empty() && self.log_scroll_position < self.log_entries.len() {
+            let log_entry = &self.log_entries[self.log_scroll_position];
+
+            if let Some(ref mut clipboard) = self.clipboard {
+                if let Err(e) = clipboard.set_text(log_entry) {
+                    self.status_message = format!("Failed to copy to clipboard: {}", e);
+                } else {
+                    self.status_message = "Log entry copied to clipboard".to_string();
+                }
+            } else {
+                self.status_message = "Clipboard not available".to_string();
+            }
         }
     }
 
     pub async fn handle_key_event(&mut self, key: KeyEvent) {
-        // Handle geometric match modal if it's active
+        // Handle geometric match modal if it's active - make it modal and prevent other interactions
         if self.show_geometric_match_modal {
-            // Handle closing the geometric match modal
+            self.handle_geometric_match_keys(key).await;
+            return;
+        }
+
+        // Handle asset details modal if it's active
+        if self.show_asset_details_modal {
+            // Handle closing the asset details modal
             if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
-                self.show_geometric_match_modal = false;
+                self.show_asset_details_modal = false;
                 return;
             }
         }
@@ -200,7 +298,7 @@ impl App {
         }
 
         // Handle log view key globally, but only when search modal is not active
-        if key.code == KeyCode::Char('l') && !self.show_search_modal {
+        if key.code == KeyCode::Char('l') && !self.show_search_modal && !self.show_geometric_match_modal {
             self.current_state = AppState::Log;
             return;
         }
@@ -271,6 +369,10 @@ impl App {
                         if self.log_scroll_position < self.log_entries.len().saturating_sub(1) {
                             self.log_scroll_position += 1;
                         }
+                    }
+                    KeyCode::Char('c') => {
+                        // Copy selected log entry to clipboard
+                        self.copy_selected_log_entry_to_clipboard();
                     }
                     _ => {}
                 }
@@ -371,6 +473,17 @@ impl App {
                 self.current_state = AppState::Downloading;
                 self.status_message = "Download mode activated. Press 'q' to return.".to_string();
             }
+            KeyCode::Char('g') => {
+                // Perform geometric match on selected asset when in Folders state but Assets pane is active
+                if self.active_pane == ActivePane::Assets && !self.assets.is_empty() && self.selected_asset_index < self.assets.len() {
+                    let asset_uuid = self.assets[self.selected_asset_index].uuid.clone();
+                    let asset_name = self.assets[self.selected_asset_index].name.clone();
+
+                    self.perform_geometric_match(&asset_uuid).await;
+                    self.show_geometric_match_modal = true; // Show the geometric match modal
+                    self.status_message = format!("Geometric match performed on: {}", asset_name);
+                }
+            }
             KeyCode::Esc | KeyCode::Backspace => {
                 self.go_back_to_parent_folder().await;
             }
@@ -428,11 +541,9 @@ impl App {
             KeyCode::Enter => {
                 match self.active_pane {
                     ActivePane::Assets => {
-                        // Perform action on selected asset (e.g., view details)
-                        if !self.assets.is_empty() && self.selected_asset_index < self.assets.len()
-                        {
-                            let asset = &self.assets[self.selected_asset_index];
-                            self.status_message = format!("Selected asset: {}", asset.name);
+                        // Show detailed information for the selected asset
+                        if !self.assets.is_empty() && self.selected_asset_index < self.assets.len() {
+                            self.show_asset_details();
                         }
                     }
                     ActivePane::Folders => {
@@ -440,7 +551,16 @@ impl App {
                             && self.selected_folder_index < self.folders.len()
                         {
                             let folder = &self.folders[self.selected_folder_index];
-                            self.enter_folder(folder.path.clone()).await; // Use the full path
+
+                            // Check if this is the parent directory indicator
+                            if folder.uuid == ".." {
+                                self.go_back_to_parent_folder().await;
+
+                                // After going back to parent, load assets for the parent folder
+                                self.load_assets_for_current_folder().await;
+                            } else {
+                                self.enter_folder(folder.path.clone()).await; // Use the full path
+                            }
                         }
                     }
                     ActivePane::Log => {
@@ -448,23 +568,24 @@ impl App {
                         // For now, just do nothing
                     }
                 }
-            }
+            },
+            KeyCode::Char('g') => {
+                // Perform geometric match on selected asset
+                if !self.assets.is_empty() && self.selected_asset_index < self.assets.len() {
+                    let asset_uuid = self.assets[self.selected_asset_index].uuid.clone();
+                    let asset_name = self.assets[self.selected_asset_index].name.clone();
+
+                    self.perform_geometric_match(&asset_uuid).await;
+                    self.show_geometric_match_modal = true; // Show the geometric match modal
+                    self.status_message = format!("Geometric match performed on: {}", asset_name);
+                }
+            },
             KeyCode::Char('d') => {
                 // Download selected asset
                 if !self.assets.is_empty() && self.selected_asset_index < self.assets.len() {
                     let asset_uuid = self.assets[self.selected_asset_index].uuid.clone();
                     let asset_name = self.assets[self.selected_asset_index].name.clone();
                     self.download_asset_by_uuid(&asset_uuid, &asset_name).await;
-                }
-            }
-            KeyCode::Char('g') => {
-                // Perform geometric match on selected asset
-                if !self.assets.is_empty() && self.selected_asset_index < self.assets.len() {
-                    let asset_uuid = self.assets[self.selected_asset_index].uuid.clone();
-                    let asset_name = self.assets[self.selected_asset_index].name.clone();
-                    self.perform_geometric_match(&asset_uuid).await;
-                    self.show_geometric_match_modal = true; // Show the geometric match modal
-                    self.status_message = format!("Geometric match performed on: {}", asset_name);
                 }
             }
             KeyCode::Char('q') => {
@@ -748,6 +869,8 @@ impl App {
                             folder_uuid: self.current_folder.clone().unwrap_or_default(), // Use current folder as parent
                             file_type: a.file_type,
                             size: a.file_size,
+                            path: a.path,
+                            metadata: a.metadata,
                         })
                         .collect();
 
@@ -858,6 +981,8 @@ impl App {
                         folder_uuid: selected_folder.path.clone(), // Use selected folder as parent
                         file_type: a.file_type,
                         size: a.file_size,
+                        path: a.path,
+                        metadata: a.metadata,
                     })
                     .collect();
 
@@ -991,10 +1116,9 @@ impl App {
     }
 
     pub async fn enter_folder(&mut self, folder_path: String) {
-        // Store the current folder path before entering the new folder
-        if let Some(ref current_path) = self.current_folder {
-            self.last_entered_folder_path = Some(current_path.clone());
-        }
+        // Store the folder name being entered so we can select it when going back
+        let folder_name_entered = folder_path.split('/').last().unwrap_or(&folder_path).to_string();
+        self.last_entered_folder_path = Some(folder_name_entered);
 
         let folder_path_clone = folder_path.clone();
         self.current_folder = Some(folder_path);
@@ -1003,7 +1127,7 @@ impl App {
         self.folder_cache.remove(&folder_path_clone);
         self.load_folders_for_current_context().await;
 
-        // Clear previous assets to ensure we're loading fresh data
+        // Clear previous assets and load for the current folder
         self.assets.clear();
         self.load_assets_for_current_folder().await;
 
@@ -1155,6 +1279,8 @@ impl App {
                         folder_uuid: a.path.split('/').next().unwrap_or_default().to_string(), // Extract folder from path
                         file_type: a.file_type,
                         size: a.file_size,
+                        path: a.path,
+                        metadata: a.metadata,
                     })
                     .collect();
 
@@ -1223,9 +1349,103 @@ impl App {
         // Always auto-scroll to the bottom to show the latest log entry
         self.log_scroll_position = self.log_entries.len().saturating_sub(1);
     }
+
+    async fn handle_geometric_match_keys(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // Close the geometric match modal
+                self.show_geometric_match_modal = false;
+            }
+            KeyCode::Up => {
+                // Navigate up in geometric match results
+                if !self.geometric_match_results.is_empty() {
+                    if self.geometric_match_scroll_position > 0 {
+                        self.geometric_match_scroll_position -= 1;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                // Navigate down in geometric match results
+                if !self.geometric_match_results.is_empty() {
+                    if self.geometric_match_scroll_position < self.geometric_match_results.len() - 1 {
+                        self.geometric_match_scroll_position += 1;
+                    }
+                }
+            }
+            KeyCode::Left => {
+                // Scroll left in the table (horizontal scrolling)
+                if self.geometric_match_horizontal_scroll > 0 {
+                    self.geometric_match_horizontal_scroll -= 1;
+                }
+            }
+            KeyCode::Right => {
+                // Scroll right in the table (horizontal scrolling)
+                // We can't determine max columns without knowing the terminal width, so just increment
+                self.geometric_match_horizontal_scroll += 1;
+            }
+            _ => {}
+        }
+    }
 }
 
 impl App {
+    pub fn show_asset_details(&mut self) {
+        if self.assets.is_empty() || self.selected_asset_index >= self.assets.len() {
+            return; // No assets or invalid selection
+        }
+
+        let selected_asset = &self.assets[self.selected_asset_index];
+        let asset_uuid = &selected_asset.uuid;
+
+        self.last_executed_command = format!("pcli2 asset get --uuid \"{}\" --format json", asset_uuid);
+        self.command_history.push(self.last_executed_command.clone());
+        self.command_in_progress = true; // Set flag when command starts
+        self.status_message = format!("Loading details for asset: {}", selected_asset.name);
+
+        match pcli_commands::get_asset_details(asset_uuid) {
+            Ok(pcli_asset_details) => {
+                // Convert from pcli_commands::AssetDetails to app::AssetDetails
+                let asset_details = crate::app::AssetDetails {
+                    uuid: pcli_asset_details.uuid,
+                    name: pcli_asset_details.name,
+                    path: pcli_asset_details.path,
+                    file_type: pcli_asset_details.file_type,
+                    file_size: pcli_asset_details.file_size,
+                    processing_status: pcli_asset_details.processing_status,
+                    created_at: pcli_asset_details.created_at,
+                    updated_at: pcli_asset_details.updated_at,
+                    is_assembly: pcli_asset_details.is_assembly,
+                    tenant_id: pcli_asset_details.tenant_id,
+                    folder_id: pcli_asset_details.folder_id,
+                    state: pcli_asset_details.state,
+                };
+
+                self.selected_asset_details = Some(asset_details);
+                self.show_asset_details_modal = true;
+                self.status_message = format!("Loaded details for {}", selected_asset.name);
+
+                // Log successful command with success indicator
+                self.add_log_entry(format!(
+                    "[{}] ✓ SUCCESS: {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command
+                ));
+                self.command_in_progress = false; // Clear flag when command completes
+            }
+            Err(e) => {
+                self.status_message = format!("Failed to load asset details: {}", e);
+
+                // Log failed command with error indicator
+                self.add_log_entry(format!(
+                    "[{}] ✗ ERROR: {} - {}",
+                    Local::now().format("%H:%M:%S"),
+                    self.last_executed_command,
+                    e
+                ));
+                self.command_in_progress = false; // Clear flag when command completes
+            }
+        }
+    }
     pub async fn perform_geometric_match(&mut self, asset_uuid: &str) {
         self.last_executed_command = format!(
             "pcli2 asset geometric-match --uuid \"{}\" --format json",
@@ -1237,16 +1457,21 @@ impl App {
         self.status_message = format!("Performing geometric match on asset: {}", asset_uuid);
 
         match pcli_commands::geometric_match(asset_uuid) {
-            Ok(pcli_assets) => {
-                // Store geometric match results
-                self.geometric_match_results = pcli_assets
+            Ok(pcli_match_results) => {
+                // Store geometric match results with similarity scores
+                self.geometric_match_results = pcli_match_results
                     .into_iter()
-                    .map(|a| Asset {
-                        uuid: a.uuid,
-                        name: a.name,
-                        folder_uuid: a.path.split('/').next().unwrap_or_default().to_string(), // Extract folder from path
-                        file_type: a.file_type,
-                        size: a.file_size,
+                    .map(|match_entry| {
+                        let asset = Asset {
+                            uuid: match_entry.asset.uuid,
+                            name: match_entry.asset.name,
+                            folder_uuid: match_entry.asset.path.split('/').next().unwrap_or_default().to_string(), // Extract folder from path
+                            file_type: match_entry.asset.file_type,
+                            size: match_entry.asset.file_size,
+                            path: match_entry.asset.path,
+                            metadata: match_entry.asset.metadata,
+                        };
+                        (asset, match_entry.similarity_score)
                     })
                     .collect();
 
