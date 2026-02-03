@@ -797,12 +797,11 @@ fn draw_log_view(f: &mut Frame, area: Rect, app: &App) {
     // Create ListState to manage selection
     let mut state = ratatui::widgets::ListState::default();
     // Calculate the relative index of the selected item within the visible range
-    let relative_selected_index = if app.log_scroll_position >= start_idx && end_idx > start_idx {
-        Some(app.log_scroll_position - start_idx)
+    if app.log_scroll_position >= start_idx && app.log_scroll_position < end_idx {
+        state.select(Some(app.log_scroll_position - start_idx));
     } else {
-        None
-    };
-    state.select(relative_selected_index);
+        state.select(None);
+    }
 
     let list = List::new(list_items)
         .block(
