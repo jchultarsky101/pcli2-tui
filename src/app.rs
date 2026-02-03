@@ -850,7 +850,7 @@ impl App {
     pub async fn load_assets_for_current_folder(&mut self) {
         if let Some(ref folder_path) = self.current_folder {
             self.last_executed_command = format!(
-                "pcli2 asset list --folder-path \"{}\" --format json",
+                "pcli2 asset list --folder-path \"{}\" --format json --metadata",
                 folder_path
             );
             self.command_history
@@ -944,7 +944,7 @@ impl App {
                     selected_folder.name
                 );
                 self.last_executed_command = format!(
-                    "pcli2 asset list --folder-path \"{}\" --format json",
+                    "pcli2 asset list --folder-path \"{}\" --format json --metadata",
                     selected_folder.path
                 );
                 self.command_history
@@ -961,7 +961,7 @@ impl App {
         // Set loading flag and status
         self.assets_loading_for_selection = true;
         self.last_executed_command = format!(
-            "pcli2 asset list --folder-path \"{}\" --format json",
+            "pcli2 asset list --folder-path \"{}\" --format json --metadata",
             selected_folder.path
         );
         self.command_history
@@ -1260,7 +1260,7 @@ impl App {
         }
 
         self.last_executed_command = format!(
-            "pcli2 asset text-match --text \"{}\" --format json",
+            "pcli2 asset text-match --text \"{}\" --format json --metadata",
             self.search_query
         );
         self.command_history
@@ -1397,7 +1397,7 @@ impl App {
         let selected_asset = &self.assets[self.selected_asset_index];
         let asset_uuid = &selected_asset.uuid;
 
-        self.last_executed_command = format!("pcli2 asset get --uuid \"{}\" --format json", asset_uuid);
+        self.last_executed_command = format!("pcli2 asset get --uuid \"{}\" --format json --metadata", asset_uuid);
         self.command_history.push(self.last_executed_command.clone());
         self.command_in_progress = true; // Set flag when command starts
         self.status_message = format!("Loading details for asset: {}", selected_asset.name);
@@ -1448,7 +1448,7 @@ impl App {
     }
     pub async fn perform_geometric_match(&mut self, asset_uuid: &str) {
         self.last_executed_command = format!(
-            "pcli2 asset geometric-match --uuid \"{}\" --format json",
+            "pcli2 asset geometric-match --uuid \"{}\" --format json --metadata",
             asset_uuid
         );
         self.command_history

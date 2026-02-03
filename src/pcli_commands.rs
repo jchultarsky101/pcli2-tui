@@ -207,7 +207,7 @@ struct SearchResponse {
 
 pub fn get_asset_details(asset_uuid: &str) -> Result<AssetDetails> {
     let output = Command::new("pcli2")
-        .args(["asset", "get", "--uuid", asset_uuid, "--format", "json"])
+        .args(["asset", "get", "--uuid", asset_uuid, "--format", "json", "--metadata"])
         .output()?;
 
     if !output.status.success() {
@@ -222,9 +222,9 @@ pub fn get_asset_details(asset_uuid: &str) -> Result<AssetDetails> {
 }
 
 pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
-    // Use the exact working command with JSON format: pcli2 asset text-match --text <query> --format json
+    // Use the exact working command with JSON format: pcli2 asset text-match --text <query> --format json --metadata
     let output = Command::new("pcli2")
-        .args(["asset", "text-match", "--text", query, "--format", "json"])
+        .args(["asset", "text-match", "--text", query, "--format", "json", "--metadata"])
         .output()?;
 
     if !output.status.success() {
@@ -247,9 +247,9 @@ pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
                         file_type: search_asset.file_type,
                         file_size: search_asset.file_size,
                         processing_status: search_asset.state.unwrap_or_else(|| "unknown".to_string()),
-                        created_at: search_asset.created_at.unwrap_or_else(|| search_asset.created_at_legacy.unwrap_or_else(|| "unknown".to_string())),
-                        updated_at: search_asset.updated_at.unwrap_or_else(|| search_asset.updated_at_legacy.unwrap_or_else(|| "unknown".to_string())),
-                        metadata: search_asset.metadata.unwrap_or_else(|| serde_json::Value::Null),
+                        created_at: search_asset.created_at.unwrap_or_else(|| search_asset.created_at_legacy.unwrap_or("unknown".to_string())),
+                        updated_at: search_asset.updated_at.unwrap_or_else(|| search_asset.updated_at_legacy.unwrap_or("unknown".to_string())),
+                        metadata: search_asset.metadata.unwrap_or(serde_json::Value::Null),
                         is_assembly: search_asset.is_assembly.unwrap_or(false),
                     }
                 })
@@ -353,7 +353,7 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<GeometricMatchEntry>> {
 
                         let metadata = asset_obj.get("metadata")
                             .cloned()
-                            .unwrap_or_else(|| serde_json::Value::Null);
+                            .unwrap_or(serde_json::Value::Null);
 
                         let is_assembly = asset_obj.get("is_assembly")
                             .or_else(|| asset_obj.get("isAssembly"))
@@ -443,7 +443,7 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<GeometricMatchEntry>> {
 
                         let metadata = asset_obj.get("metadata")
                             .cloned()
-                            .unwrap_or_else(|| serde_json::Value::Null);
+                            .unwrap_or(serde_json::Value::Null);
 
                         let is_assembly = asset_obj.get("is_assembly")
                             .or_else(|| asset_obj.get("isAssembly"))
