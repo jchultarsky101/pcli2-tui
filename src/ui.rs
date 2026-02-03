@@ -46,6 +46,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.show_geometric_match_modal {
         draw_geometric_match_modal(f, f.area(), app);
     }
+
+    // Draw asset details modal if active
+    if app.show_asset_details_modal {
+        draw_asset_details_modal(f, f.area(), app);
+    }
 }
 
 
@@ -525,7 +530,7 @@ fn draw_contextual_key_bindings(f: &mut Frame, app: &App, area: Rect) {
         crate::app::AppState::Uploading | crate::app::AppState::Downloading => "q:quit",
         crate::app::AppState::Help => "q/esc:close",
         crate::app::AppState::CommandHistory => "q/esc:close",
-        crate::app::AppState::Log => "↑↓:scroll | q:quit",
+        crate::app::AppState::Log => "↑↓:scroll | ←→:h-scroll | c:COPY | C:CMD-COPY | q:quit",
         crate::app::AppState::PaneResize => "↑↓←→:resize | enter:ok | esc/q:cancel",
     };
 
@@ -702,7 +707,7 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::widgets::Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
                 .title(format!(
-                    " 📝 Log [{}/{}] ", // Added log emoji
+                    " 📝 Log2 [{}/{}] ", // Added log emoji
                     app.log_scroll_position + 1,
                     app.log_entries.len()
                 ))
@@ -751,66 +756,80 @@ fn draw_command_history_view(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_log_view(f: &mut Frame, area: Rect, app: &App) {
     let title = format!(
-        " 📝 Log [{}/{}] ",
+        " 📝 Log2 [{}/{}] ",
         app.log_scroll_position + 1,
         app.log_entries.len()
     );
 
-    // Show a portion of the log entries based on scroll position
+    // Create list items - we'll handle selection through ListState
     let start_idx = app.log_scroll_position.saturating_sub(10); // Show 10 entries before current position
     let end_idx = std::cmp::min(start_idx + 20, app.log_entries.len()); // Show 20 entries total
 
-    // Create list items with highlighting for the selected item
-    let list_items: Vec<ratatui::widgets::ListItem> = app
+    let list_items: Vec<ListItem> = app
         .log_entries
         .iter()
         .skip(start_idx)
         .take(end_idx - start_idx)
-        .enumerate()
-        .map(|(idx, entry)| {
-            // Check if this item corresponds to the current scroll position
-            let is_selected = start_idx + idx == app.log_scroll_position;
-
-            if is_selected {
-                // Style for selected item - use a more prominent highlight
-                ratatui::widgets::ListItem::new(ratatui::text::Line::from(vec![
-                    ratatui::text::Span::styled(
-                        "▶ ",
-                        ratatui::style::Style::default()
-                            .bg(ratatui::style::Color::Rgb(70, 130, 180))  // Steel blue
-                            .fg(ratatui::style::Color::Rgb(255, 215, 0))   // Gold
-                            .add_modifier(ratatui::style::Modifier::BOLD),
-                    ),
-                    ratatui::text::Span::styled(
-                        entry.as_str(),
-                        ratatui::style::Style::default()
-                            .bg(ratatui::style::Color::Rgb(70, 130, 180))  // Steel blue
-                            .fg(ratatui::style::Color::White)
-                            .add_modifier(ratatui::style::Modifier::BOLD),
-                    ),
-                ]))
+        .map(|entry| {
+            // Apply horizontal scrolling by slicing the entry text
+            let display_text = if app.log_horizontal_scroll > 0 {
+                let scroll_offset = app.log_horizontal_scroll as usize;
+                if entry.len() > scroll_offset {
+                    // Safely slice the string by bytes, but try to avoid cutting in the middle of a character
+                    let chars: Vec<char> = entry.chars().collect();
+                    if chars.len() > scroll_offset {
+                        chars[scroll_offset..].iter().collect::<String>()
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    entry.clone()
+                }
             } else {
-                // Style for non-selected items
-                ratatui::widgets::ListItem::new(ratatui::text::Line::from(entry.as_str()))
-            }
+                entry.clone()
+            };
+
+            // Create a simple list item with the display text
+            ListItem::new(Line::from(display_text))
         })
         .collect();
 
-    let list = ratatui::widgets::List::new(list_items).block(
-        ratatui::widgets::Block::default()
-            .borders(ratatui::widgets::Borders::ALL)
-            .title(title)
-            .border_style(ratatui::style::Style::default()
-                .fg(ratatui::style::Color::Rgb(100, 149, 237))  // Cornflower blue border
-                .add_modifier(ratatui::style::Modifier::BOLD)),
-    )
-    .style(
-        ratatui::style::Style::default()
-            .bg(ratatui::style::Color::Rgb(30, 30, 30))  // Same background as other panes
-            .fg(ratatui::style::Color::Rgb(200, 200, 200)),  // Same text color as other panes
-    );
+    // Create ListState to manage selection
+    let mut state = ratatui::widgets::ListState::default();
+    // Calculate the relative index of the selected item within the visible range
+    let relative_selected_index = if app.log_scroll_position >= start_idx && end_idx > start_idx {
+        Some(app.log_scroll_position - start_idx)
+    } else {
+        None
+    };
+    state.select(relative_selected_index);
 
-    f.render_widget(list, area);
+    let list = List::new(list_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(
+                    Style::default()
+                        .fg(Color::Rgb(100, 149, 237)) // Cornflower blue border
+                        .add_modifier(Modifier::BOLD),
+                ),
+        )
+        .style(
+            Style::default()
+                .bg(Color::Rgb(30, 30, 30)) // Same background as other panes
+                .fg(Color::Rgb(200, 200, 200)), // Same text color as other panes
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Rgb(70, 130, 180)) // Steel blue
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(" >> ")
+        .scroll_padding(5); // Show 5 items before and after the selected item
+
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_search_modal(f: &mut Frame, area: Rect, app: &App) {
@@ -976,6 +995,152 @@ fn extract_metadata_keys(assets: &[(Asset, f64)]) -> Vec<String> {
     let mut sorted_metadata_keys: Vec<String> = all_metadata_keys.into_iter().collect();
     sorted_metadata_keys.sort();
     sorted_metadata_keys
+}
+
+fn draw_asset_details_modal(f: &mut Frame, area: Rect, app: &App) {
+    // Create a medium-sized centered modal window (60% width, 80% height)
+    let popup_area = centered_rect(60, 80, area);
+
+    // Clear the background first
+    f.render_widget(Clear, popup_area);
+
+    // Draw outer frame for the modal
+    let modal_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(255, 215, 0)).add_modifier(Modifier::BOLD))  // Gold border
+        .title(" 📋 Asset Details ")
+        .style(Style::default().bg(Color::Rgb(30, 30, 40))); // Dark background matching theme
+
+    f.render_widget(modal_block, popup_area);
+
+    // Calculate inner area for content
+    let inner_area = Rect {
+        x: popup_area.x + 1,
+        y: popup_area.y + 1,
+        width: popup_area.width - 2,
+        height: popup_area.height - 2,
+    };
+
+    // Check if asset details are available
+    if let Some(details) = &app.selected_asset_details {
+        // Create a layout for the content area
+        let content_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Top padding
+                Constraint::Min(1),    // Content area
+                Constraint::Length(3), // Bottom space for close instruction
+            ])
+            .split(inner_area);
+
+        // Create a paragraph widget to display asset details
+        let details_text = vec![
+            Line::from(vec![
+                Span::styled("UUID: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.uuid),
+            ]),
+            Line::from(vec![
+                Span::styled("Name: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.name),
+            ]),
+            Line::from(vec![
+                Span::styled("Path: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.path),
+            ]),
+            Line::from(vec![
+                Span::styled("File Type: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.file_type),
+            ]),
+            Line::from(vec![
+                Span::styled("File Size: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(match details.file_size {
+                    Some(size) => format!("{}", size),
+                    None => "Unknown".to_string(),
+                }),
+            ]),
+            Line::from(vec![
+                Span::styled("Processing Status: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.processing_status),
+            ]),
+            Line::from(vec![
+                Span::styled("Created At: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.created_at),
+            ]),
+            Line::from(vec![
+                Span::styled("Updated At: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.updated_at),
+            ]),
+            Line::from(vec![
+                Span::styled("Is Assembly: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(if details.is_assembly { "Yes" } else { "No" }),
+            ]),
+            Line::from(vec![
+                Span::styled("Tenant ID: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.tenant_id),
+            ]),
+            Line::from(vec![
+                Span::styled("Folder ID: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.folder_id),
+            ]),
+            Line::from(vec![
+                Span::styled("State: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&details.state),
+            ]),
+            Line::from(Span::raw("")), // Empty line before metadata
+            Line::from(vec![
+                Span::styled("Metadata:", Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+            ]),
+        ];
+
+        // Add metadata fields if they exist
+        let mut metadata_lines = Vec::new();
+        if let Some(obj) = details.metadata.as_object() {
+            for (key, value) in obj {
+                let value_str = if let Some(str_val) = value.as_str() {
+                    str_val.to_string()
+                } else {
+                    value.to_string() // For non-string values, keep the JSON representation
+                };
+
+                metadata_lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", key), Style::default().add_modifier(Modifier::ITALIC)),
+                    Span::raw(value_str),
+                ]));
+            }
+        } else if !details.metadata.is_null() {
+            // If metadata is not an object but exists, show it as a single line
+            metadata_lines.push(Line::from(vec![
+                Span::styled("  Metadata: ", Style::default().add_modifier(Modifier::ITALIC)),
+                Span::raw(details.metadata.to_string()),
+            ]));
+        }
+
+        // Combine all lines
+        let mut all_lines = details_text;
+        all_lines.extend(metadata_lines);
+
+        let details_paragraph = Paragraph::new(all_lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .scroll((0, 0))
+            .style(Style::default().fg(Color::Rgb(200, 200, 200)));
+
+        // Render the details paragraph
+        f.render_widget(details_paragraph, content_chunks[1]);
+
+        // Add close instruction at the bottom
+        let close_instruction = Paragraph::new("Press 'q' or ESC to close")
+            .alignment(Alignment::Center)
+            .style(Style::default().add_modifier(Modifier::DIM));
+
+        f.render_widget(close_instruction, content_chunks[2]);
+    } else {
+        // Show a message if no asset details are available
+        let no_details_text = Paragraph::new("No asset details available")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(100, 100, 100)));
+
+        f.render_widget(no_details_text, inner_area);
+    }
 }
 
 fn draw_geometric_match_modal(f: &mut Frame, area: Rect, app: &App) {

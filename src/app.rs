@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use crate::pcli_commands;
 use chrono::prelude::*;
 use std::collections::HashMap;
-use arboard;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Folder {
@@ -72,6 +71,7 @@ pub struct App {
     pub command_history: Vec<String>,       // Track command history
     pub log_entries: Vec<String>,           // Track log entries (commands and outputs)
     pub log_scroll_position: usize,         // Track scroll position in log
+    pub log_horizontal_scroll: u16,         // Track horizontal scroll position in log
     pub show_search_modal: bool,            // Whether to show the search modal
     pub search_input_buffer: String,        // Buffer for search input
     pub command_in_progress: bool,          // Whether a PCLI2 command is currently running
@@ -150,6 +150,7 @@ pub struct AssetDetails {
     pub tenant_id: String,
     pub folder_id: String,
     pub state: String,
+    pub metadata: serde_json::Value,  // Add metadata field
 }
 
 impl App {
@@ -171,6 +172,7 @@ impl App {
             command_history: Vec::new(),
             log_entries: Vec::new(),
             log_scroll_position: 0,
+            log_horizontal_scroll: 0,
             show_search_modal: false,
             search_input_buffer: String::new(),
             command_in_progress: false,
@@ -187,16 +189,7 @@ impl App {
             show_asset_details_modal: false,
             selected_asset_details: None,
             last_entered_folder_path: None,
-            clipboard: {
-                // Initialize the clipboard if available
-                match arboard::Clipboard::new() {
-                    Ok(clipboard) => Some(clipboard),
-                    Err(_) => {
-                        // If clipboard initialization fails, continue without it
-                        None
-                    }
-                }
-            },
+            clipboard: arboard::Clipboard::new().ok(),
         }
     }
 
@@ -214,6 +207,50 @@ impl App {
                 self.status_message = "Clipboard not available".to_string();
             }
         }
+    }
+
+    pub fn copy_command_from_selected_log_entry_to_clipboard(&mut self) {
+        if !self.log_entries.is_empty() && self.log_scroll_position < self.log_entries.len() {
+            let log_entry = &self.log_entries[self.log_scroll_position];
+
+            // Extract just the command part from the log entry
+            // Log entries typically follow the format: "[HH:MM:SS] STATUS: command"
+            let command_part = self.extract_command_from_log_entry(log_entry);
+
+            if let Some(ref mut clipboard) = self.clipboard {
+                if let Err(e) = clipboard.set_text(&command_part) {
+                    self.status_message = format!("Failed to copy command to clipboard: {}", e);
+                } else {
+                    self.status_message = "Command copied to clipboard".to_string();
+                }
+            } else {
+                self.status_message = "Clipboard not available".to_string();
+            }
+        }
+    }
+
+    fn extract_command_from_log_entry(&self, log_entry: &str) -> String {
+        // Look for patterns like "[HH:MM:SS] STATUS: command" or "[HH:MM:SS] STATUS: command"
+        // Common patterns in our logs:
+        // - "[HH:MM:SS] ✓ SUCCESS: command"
+        // - "[HH:MM:SS] ✗ ERROR: command - error details"
+        // - "[HH:MM:SS] CACHED: command"
+
+        // Find the colon after the timestamp and status
+        if let Some(colon_pos) = log_entry.find(": ") {
+            // Skip past the timestamp and status part
+            let after_colon = &log_entry[colon_pos + 2..];
+
+            // If there's an error part after a " - ", only return the command part
+            if let Some(error_separator) = after_colon.find(" - ") {
+                return after_colon[..error_separator].trim().to_string();
+            } else {
+                return after_colon.trim().to_string();
+            }
+        }
+
+        // If we can't parse it, return the whole entry
+        log_entry.to_string()
     }
 
     pub async fn handle_key_event(&mut self, key: KeyEvent) {
@@ -370,9 +407,24 @@ impl App {
                             self.log_scroll_position += 1;
                         }
                     }
+                    KeyCode::Left => {
+                        // Scroll left in the log horizontally
+                        if self.log_horizontal_scroll > 0 {
+                            self.log_horizontal_scroll -= 1;
+                        }
+                    }
+                    KeyCode::Right => {
+                        // Scroll right in the log horizontally
+                        // Increase the horizontal scroll position
+                        self.log_horizontal_scroll += 1;
+                    }
                     KeyCode::Char('c') => {
                         // Copy selected log entry to clipboard
                         self.copy_selected_log_entry_to_clipboard();
+                    }
+                    KeyCode::Char('C') => {
+                        // Copy just the command part from the selected log entry to clipboard
+                        self.copy_command_from_selected_log_entry_to_clipboard();
                     }
                     _ => {}
                 }
@@ -443,11 +495,9 @@ impl App {
                         }
                     }
                     ActivePane::Assets => {
-                        // Perform action on selected asset (e.g., view details)
-                        if !self.assets.is_empty() && self.selected_asset_index < self.assets.len()
-                        {
-                            let asset = &self.assets[self.selected_asset_index];
-                            self.status_message = format!("Selected asset: {}", asset.name);
+                        // Show detailed information for the selected asset
+                        if !self.assets.is_empty() && self.selected_asset_index < self.assets.len() {
+                            self.show_asset_details();
                         }
                     }
                     ActivePane::Log => {
@@ -649,19 +699,17 @@ impl App {
             }
             KeyCode::Down => {
                 // Navigate down in search results only if focused on results
-                if matches!(self.search_modal_focus, SearchModalFocus::Results) {
-                    if !self.search_results.is_empty() {
-                        self.selected_search_result_index =
-                            (self.selected_search_result_index + 1).min(self.search_results.len() - 1);
-                    }
+                if matches!(self.search_modal_focus, SearchModalFocus::Results)
+                    && !self.search_results.is_empty() {
+                    self.selected_search_result_index =
+                        (self.selected_search_result_index + 1).min(self.search_results.len() - 1);
                 }
             }
             KeyCode::Up => {
                 // Navigate up in search results only if focused on results
-                if matches!(self.search_modal_focus, SearchModalFocus::Results) {
-                    if self.selected_search_result_index > 0 {
-                        self.selected_search_result_index -= 1;
-                    }
+                if matches!(self.search_modal_focus, SearchModalFocus::Results)
+                    && self.selected_search_result_index > 0 {
+                    self.selected_search_result_index -= 1;
                 }
             }
             KeyCode::Char('d')
@@ -1117,7 +1165,7 @@ impl App {
 
     pub async fn enter_folder(&mut self, folder_path: String) {
         // Store the folder name being entered so we can select it when going back
-        let folder_name_entered = folder_path.split('/').last().unwrap_or(&folder_path).to_string();
+        let folder_name_entered = folder_path.split('/').next_back().unwrap_or(&folder_path).to_string();
         self.last_entered_folder_path = Some(folder_name_entered);
 
         let folder_path_clone = folder_path.clone();
@@ -1358,18 +1406,16 @@ impl App {
             }
             KeyCode::Up => {
                 // Navigate up in geometric match results
-                if !self.geometric_match_results.is_empty() {
-                    if self.geometric_match_scroll_position > 0 {
-                        self.geometric_match_scroll_position -= 1;
-                    }
+                if !self.geometric_match_results.is_empty()
+                    && self.geometric_match_scroll_position > 0 {
+                    self.geometric_match_scroll_position -= 1;
                 }
             }
             KeyCode::Down => {
                 // Navigate down in geometric match results
-                if !self.geometric_match_results.is_empty() {
-                    if self.geometric_match_scroll_position < self.geometric_match_results.len() - 1 {
-                        self.geometric_match_scroll_position += 1;
-                    }
+                if !self.geometric_match_results.is_empty()
+                    && self.geometric_match_scroll_position < self.geometric_match_results.len() - 1 {
+                    self.geometric_match_scroll_position += 1;
                 }
             }
             KeyCode::Left => {
@@ -1418,6 +1464,7 @@ impl App {
                     tenant_id: pcli_asset_details.tenant_id,
                     folder_id: pcli_asset_details.folder_id,
                     state: pcli_asset_details.state,
+                    metadata: pcli_asset_details.metadata,
                 };
 
                 self.selected_asset_details = Some(asset_details);

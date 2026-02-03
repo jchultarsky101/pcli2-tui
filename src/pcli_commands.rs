@@ -21,11 +21,11 @@ pub struct AssetDetails {
     pub metadata: serde_json::Value,
     #[serde(rename = "is_assembly")]
     pub is_assembly: bool,
-    #[serde(rename = "tenantId")]
+    #[serde(rename = "tenantId", default)]
     pub tenant_id: String,
-    #[serde(rename = "folderId")]
+    #[serde(rename = "folderId", default)]
     pub folder_id: String,
-    #[serde(rename = "state")]
+    #[serde(rename = "state", default)]
     pub state: String,
 }
 
@@ -242,7 +242,7 @@ pub fn search_assets(query: &str) -> Result<Vec<PcliAsset>> {
                     let search_asset = match_result.asset;
                     PcliAsset {
                         uuid: search_asset.uuid,
-                        name: search_asset.path.split('/').last().unwrap_or(&search_asset.path).to_string(), // Extract filename from path
+                        name: search_asset.path.split('/').next_back().unwrap_or(&search_asset.path).to_string(), // Extract filename from path
                         path: search_asset.path,
                         file_type: search_asset.file_type,
                         file_size: search_asset.file_size,
@@ -322,7 +322,7 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<GeometricMatchEntry>> {
                         let name = asset_obj.get("name")
                             .or_else(|| asset_obj.get("filename"))  // Alternative field name
                             .and_then(|v| v.as_str())
-                            .unwrap_or(path.split('/').last().unwrap_or(""))
+                            .unwrap_or(path.split('/').next_back().unwrap_or(""))
                             .to_string();
 
                         let file_type = asset_obj.get("type")
@@ -361,16 +361,16 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<GeometricMatchEntry>> {
                             .unwrap_or(false);
 
                         let asset = PcliAsset {
-                            uuid: uuid,
-                            name: name,
-                            path: path,
-                            file_type: file_type,
-                            file_size: file_size,
-                            processing_status: processing_status,
-                            created_at: created_at,
-                            updated_at: updated_at,
-                            metadata: metadata,
-                            is_assembly: is_assembly,
+                            uuid,
+                            name,
+                            path,
+                            file_type,
+                            file_size,
+                            processing_status,
+                            created_at,
+                            updated_at,
+                            metadata,
+                            is_assembly,
                         };
 
                         // Extract the similarity score from the match item
@@ -412,7 +412,7 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<GeometricMatchEntry>> {
                         let name = asset_obj.get("name")
                             .or_else(|| asset_obj.get("filename"))
                             .and_then(|v| v.as_str())
-                            .unwrap_or(path.split('/').last().unwrap_or(""))
+                            .unwrap_or(path.split('/').next_back().unwrap_or(""))
                             .to_string();
 
                         let file_type = asset_obj.get("type")
@@ -451,16 +451,16 @@ pub fn geometric_match(asset_uuid: &str) -> Result<Vec<GeometricMatchEntry>> {
                             .unwrap_or(false);
 
                         let asset = PcliAsset {
-                            uuid: uuid,
-                            name: name,
-                            path: path,
-                            file_type: file_type,
-                            file_size: file_size,
-                            processing_status: processing_status,
-                            created_at: created_at,
-                            updated_at: updated_at,
-                            metadata: metadata,
-                            is_assembly: is_assembly,
+                            uuid,
+                            name,
+                            path,
+                            file_type,
+                            file_size,
+                            processing_status,
+                            created_at,
+                            updated_at,
+                            metadata,
+                            is_assembly,
                         };
 
                         // For direct arrays, assign a default similarity score
